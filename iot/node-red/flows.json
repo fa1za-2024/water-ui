@@ -38,7 +38,7 @@
         "botname": "fa1zalWater_bot",
         "usernames": "",
         "chatids": "${TELEGRAM_CHAT_ID}",
-        "updatemode": "polling",
+        "updatemode": "${TELEGRAM_UPDATE_MODE}",
         "pollinterval": "300",
         "usesocks": false,
         "sockshost": "",

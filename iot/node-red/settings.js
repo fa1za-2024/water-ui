@@ -39,6 +39,15 @@ process.env.MQTT_HOST =
 // own value; this default keeps a bare `node-red` run working.
 process.env.MQTT_CLIENT_ID = process.env.MQTT_CLIENT_ID || 'water-ui-nodered';
 
+// --- Telegram update mode ----------------------------------------------------
+// flows.json substitutes ${TELEGRAM_UPDATE_MODE}. Only ONE process may poll a
+// bot token at a time: a second getUpdates is answered with a 409 Conflict and
+// the two fight, exactly like a duplicate MQTT client id. The Compose stack
+// therefore sets "none" (send-only - it initialises the bot but never calls
+// getUpdates), which still lets this instance SEND alerts while polling stays
+// with the Railway instance. Values: "polling" | "webhook" | "none".
+process.env.TELEGRAM_UPDATE_MODE = process.env.TELEGRAM_UPDATE_MODE || 'polling';
+
 module.exports = {
     // Editor + runtime port inside the container.
     uiPort: process.env.PORT || 1880,

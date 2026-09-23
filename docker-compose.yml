@@ -110,6 +110,10 @@ services:
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-water-ui-nodered-local}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      # Only one process may poll a bot token (else Telegram 409 Conflict), so the
+      # local stack is send-only by default and the Railway instance owns
+      # getUpdates. Set "polling" here only when nothing else polls this token.
+      TELEGRAM_UPDATE_MODE: ${TELEGRAM_UPDATE_MODE:-none}
     volumes:
       # settings.js, flows.json and package.json all live here.
       - ./iot/node-red:/data
