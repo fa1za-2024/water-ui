@@ -1,0 +1,319 @@
+[
+    {
+        "id": "flow_wq",
+        "type": "tab",
+        "label": "Water Quality Pipeline",
+        "disabled": false,
+        "info": "# Water UI - MQTT to InfluxDB pipeline\n\n`sensors/+/data` (XIAO ESP32C3) -> **Validate + derive statuses** -> three branches:\n\n1. **InfluxDB write** - line protocol POST to `/api/v2/write` (tags: board_id, wq_status, batt_level, wifi_status; fields: pH, turbidity, batt_voltage, rssi)\n2. **Express notify** - POST `/api/internal/sensor-update` so the API can push over Socket.io\n3. **Alerts** - `wq_status == \"Unsafe\"` -> rate limited to 1 per 15 min -> Telegram\n\nThresholds live in the function node and are documented in MASTER_CONTEXT.md section 5.3.\nInfluxDB URL/org/bucket/token come from container environment variables via `env.get()`. The MQTT broker host is substituted at flow-load time from `MQTT_HOST` (compose: the `mosquitto` service name; Railway: the broker's private domain)."
+    },
+    {
+        "id": "mqtt_broker",
+        "type": "mqtt-broker",
+        "name": "Mosquitto (broker = MQTT_HOST)",
+        "broker": "${MQTT_HOST}",
+        "port": "1883",
+        "clientid": "water-ui-nodered",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {}
+    },
+    {
+        "id": "telegram_bot",
+        "type": "telegram bot",
+        "botname": "water_ui_bot",
+        "usernames": "",
+        "chatids": "",
+        "updatemode": "polling",
+        "pollinterval": "300",
+        "usesocks": false,
+        "sockshost": "",
+        "socksport": "6667",
+        "socksusername": "anonymous",
+        "sockspassword": "",
+        "bothost": "",
+        "botpath": "",
+        "localbotport": "8443",
+        "publicbotport": "8443",
+        "privatekey": "",
+        "certificate": "",
+        "useselfsignedcertificate": false,
+        "sslterminated": false,
+        "verboselogging": false
+    },
+    {
+        "id": "mqtt_in",
+        "type": "mqtt in",
+        "z": "flow_wq",
+        "name": "ESP32C3 telemetry",
+        "topic": "sensors/+/data",
+        "qos": "2",
+        "datatype": "json",
+        "broker": "mqtt_broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "x": 160,
+        "y": 140,
+        "wires": [
+            [
+                "fn_process"
+            ]
+        ]
+    },
+    {
+        "id": "fn_process",
+        "type": "function",
+        "z": "flow_wq",
+        "name": "Validate + derive statuses",
+        "func": "// Water UI - validate the MQTT payload, derive statuses, emit 3 messages.\n// Rule 6: parseFloat()/parseInt() before anything reaches InfluxDB.\nconst p = msg.payload || {};\nconst boardID = String(p.boardID || p.board_id || '').trim();\nconst pH = parseFloat(p.pH);\nconst turbidity = parseFloat(p.turbidity);\nconst batt_voltage = parseFloat(p.batt_voltage);\nconst rssi = parseInt(p.rssi, 10);\n\n// Validation: never write NaN or undefined into InfluxDB - it breaks Chart.js.\nconst missing = [];\nif (!boardID) { missing.push('boardID'); }\nif (!Number.isFinite(pH)) { missing.push('pH'); }\nif (!Number.isFinite(turbidity)) { missing.push('turbidity'); }\nif (missing.length > 0) {\n    node.warn('Water UI: dropped payload - invalid or missing: ' + missing.join(', '));\n    return [null, null, null];\n}\n\n// Derived statuses. Single source of truth: MASTER_CONTEXT.md section 5.3\nlet wq_status = 'Safe';\nif (pH < 6.5 || pH > 8.5 || turbidity > 5.0) {\n    wq_status = 'Unsafe';\n} else if (pH < 7.0 || pH > 8.0 || turbidity > 3.0) {\n    wq_status = 'Acceptable';\n}\n\nlet batt_level = 'Full';\nif (batt_voltage <= 3.3) { batt_level = 'Critical'; }\nelse if (batt_voltage <= 3.5) { batt_level = 'Low'; }\nelse if (batt_voltage <= 3.7) { batt_level = 'Medium'; }\n\nlet wifi_status = 'Excellent';\nif (rssi <= -80) { wifi_status = 'Poor'; }\nelse if (rssi <= -70) { wifi_status = 'Fair'; }\nelse if (rssi <= -60) { wifi_status = 'Good'; }\n\n// Edge timestamp: the device's epoch-ms 'ts' when present, else arrival time.\nconst tsMs = Math.floor(Number.isFinite(parseFloat(p.ts)) ? parseFloat(p.ts) : Date.now());\n\nconst reading = {\n    boardID: boardID,\n    pH: pH,\n    turbidity: turbidity,\n    batt_voltage: Number.isFinite(batt_voltage) ? batt_voltage : 0,\n    rssi: Number.isFinite(rssi) ? rssi : 0,\n    wq_status: wq_status,\n    batt_level: batt_level,\n    wifi_status: wifi_status,\n    time: new Date(tsMs).toISOString()\n};\n\n// --- 1. InfluxDB: line protocol. Tags are indexed, rssi stays an integer. ---\n// Build the backslash without embedding one, so this string stays JSON-safe.\nconst BS = String.fromCharCode(92);\nconst esc = function (v) { return String(v).replace(/([ ,=])/g, BS + '$1'); };\nconst tagSet = 'board_id=' + esc(boardID) + ',wq_status=' + esc(wq_status) + ',batt_level=' + esc(batt_level) + ',wifi_status=' + esc(wifi_status);\nconst fieldSet = 'pH=' + pH + ',turbidity=' + turbidity + ',batt_voltage=' + reading.batt_voltage + ',rssi=' + reading.rssi + 'i';\n// ms -> ns as a string: no 2^53 precision loss on the timestamp.\nconst timeNs = String(tsMs) + '000000';\nconst influxMsg = {\n    payload: 'water_quality,' + tagSet + ' ' + fieldSet + ' ' + timeNs,\n    url: env.get('INFLUX_URL', 'http://influxdb:8086') + '/api/v2/write?org=' + encodeURIComponent(env.get('INFLUX_ORG', 'water_ui_org')) + '&bucket=' + encodeURIComponent(env.get('INFLUX_BUCKET', 'water_quality_bucket')) + '&precision=ns',\n    method: 'POST',\n    headers: {\n        'Authorization': 'Token ' + env.get('INFLUX_TOKEN', ''),\n        'Content-Type': 'text/plain; charset=utf-8'\n    }\n};\n\n// --- 2. Notify the Express API so it can push the reading over Socket.io ---\nconst backendMsg = {\n    payload: JSON.stringify(reading),\n    url: env.get('BACKEND_URL', 'http://backend:5000') + '/api/internal/sensor-update',\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' }\n};\n\n// --- 3. Alert branch: the switch node filters wq_status == 'Unsafe' --------\nconst alertMsg = { payload: reading, reading: reading };\n\nreturn [influxMsg, backendMsg, alertMsg];",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 140,
+        "wires": [
+            [
+                "http_influx"
+            ],
+            [
+                "http_backend"
+            ],
+            [
+                "sw_unsafe"
+            ]
+        ]
+    },
+    {
+        "id": "http_influx",
+        "type": "http request",
+        "z": "flow_wq",
+        "name": "InfluxDB write",
+        "method": "use",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 700,
+        "y": 80,
+        "wires": [
+            [
+                "dbg_influx"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_influx",
+        "type": "debug",
+        "z": "flow_wq",
+        "name": "InfluxDB result",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 930,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "http_backend",
+        "type": "http request",
+        "z": "flow_wq",
+        "name": "Notify Express (Socket.io)",
+        "method": "use",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 740,
+        "y": 160,
+        "wires": [
+            [
+                "dbg_backend"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_backend",
+        "type": "debug",
+        "z": "flow_wq",
+        "name": "Express result",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 940,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "sw_unsafe",
+        "type": "switch",
+        "z": "flow_wq",
+        "name": "wq_status == Unsafe ?",
+        "property": "payload.wq_status",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "Unsafe",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 1,
+        "x": 700,
+        "y": 260,
+        "wires": [
+            [
+                "delay_alert"
+            ]
+        ]
+    },
+    {
+        "id": "delay_alert",
+        "type": "delay",
+        "z": "flow_wq",
+        "name": "rate limit 1 / 15 min",
+        "pauseType": "rate",
+        "timeout": "5",
+        "timeoutUnits": "seconds",
+        "rate": "1",
+        "nbRateUnits": "15",
+        "rateUnits": "minute",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 920,
+        "y": 260,
+        "wires": [
+            [
+                "tmpl_alert",
+                "dbg_alert"
+            ]
+        ]
+    },
+    {
+        "id": "tmpl_alert",
+        "type": "template",
+        "z": "flow_wq",
+        "name": "Alert message",
+        "field": "payload",
+        "fieldType": "msg",
+        "format": "handlebars",
+        "syntax": "mustache",
+        "template": "🚨 ALERT: Water Quality Unsafe at Board {{payload.boardID}}. pH: {{payload.pH}}, Turbidity: {{payload.turbidity}}.",
+        "output": "str",
+        "x": 1110,
+        "y": 240,
+        "wires": [
+            [
+                "telegram_alert"
+            ]
+        ]
+    },
+    {
+        "id": "telegram_alert",
+        "type": "telegram sender",
+        "z": "flow_wq",
+        "name": "Telegram alert",
+        "bot": "telegram_bot",
+        "haserroroutput": false,
+        "outputs": 1,
+        "x": 1310,
+        "y": 240,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "dbg_alert",
+        "type": "debug",
+        "z": "flow_wq",
+        "name": "Alert (rate limited)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1130,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "catch_all",
+        "type": "catch",
+        "z": "flow_wq",
+        "name": "Pipeline errors",
+        "scope": null,
+        "uncaught": false,
+        "x": 160,
+        "y": 340,
+        "wires": [
+            [
+                "dbg_err"
+            ]
+        ]
+    },
+    {
+        "id": "dbg_err",
+        "type": "debug",
+        "z": "flow_wq",
+        "name": "Error",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 390,
+        "y": 340,
+        "wires": []
+    }
+]

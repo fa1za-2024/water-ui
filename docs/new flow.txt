@@ -1,0 +1,51 @@
+Step 01: (A) Wake up from Deep Sleep (Timer set to 30 seconds).
+Step 02: Measure Battery Voltage.
+Step 03: Decision: Is battery less than 15%?
+	YES: Proceed to Step 04.
+	NO: Proceed to Step 05.
+Step 04: (B) Go to Deep Sleep (End of current cycle, preserve battery).
+Step 05: Turn on the sensors (via GPIO 7. Ensure analog sensors use ADC1 pins).
+Step 06: Wait 5 seconds for sensors stabilization.
+Step 07: Set Sample Counter to 0.
+Step 08: Decision: Is sample counter less than 50?
+	YES: Proceed to Step 09.
+	NO: Proceed to Step 12.
+Step 09: Read Analog Sensor (ADC1: GPIO 1 & 2 for pH/Turbidity).
+Step 10: Wait for 20 ms.
+Step 11: Add 1 to Sample Counter. Return to Step 08.
+Step 12: Sort the array from lowest to highest. Filter out NaN or disconnected-sensor values. Discard the top 10 and bottom 10 readings.
+Step 13: Calculate average value for pH and Turbidity (Sum of remaining 30 middle samples / 30).
+Step 13.5: Decision: Are calculated values within physical limits? (e.g., pH 0-14).
+	YES: Proceed to Step 14.
+	NO: Proceed to Step 04 (B) (Discard invalid reading and go to sleep).
+Step 14: Turn off sensors.
+Step 15: (C) Set wifi_try Counter to 0.
+Step 16: Initialize Wi-Fi Connection with 10-second timeout.
+Step 17: Decision: Is Wi-Fi connected?
+	YES: Proceed to Step 20.
+	NO: Proceed to Step 18.
+Step 18: Decision: Is wifi_try Counter less than 3?
+	YES: Proceed to Step 19.
+	NO: Proceed to Step 19.5.
+Step 19: Add 1 to wifi_try Counter. Return to Step 16.
+Step 19.5: (NEW) Save current JSON payload to LittleFS (/backlog/<ts>.json). Apply circular buffer limit. Proceed to Step 04 (B).
+Step 20: Synchronize NTP Time (Required to populate the ts epoch milliseconds field accurately).
+Step 20.5: Retrieve RSSI via WiFi.RSSI().
+Step 21: Set mqtt_try Counter to 0. Configure Last Will and Testament (LWT).
+Step 22: Initialize MQTT Connection with 5-second timeout. Publish retained online status.
+Step 23: Decision: Is MQTT connected?
+	YES: Proceed to Step 26.
+	NO: Proceed to Step 24.
+Step 24: Decision: Is mqtt_try Counter less than 3?
+	YES: Proceed to Step 25.
+	NO: Proceed to Step 25.5.
+Step 25: Add 1 to mqtt_try Counter. Return to Step 22.
+Step 26: Save current JSON payload to LittleFS (/backlog/<ts>.json). 
+		Apply circular buffer limit. Proceed to Step 04 (B).
+Step 26: Scan LittleFS /backlog/ directory for any saved .json files. Sort them chronologically (oldest first).
+Step 27: Build current JSON payload (using current readings and ts).
+Step 28: Send current payload to MQTT Broker. Wait 500ms for network buffer to clear.
+Step 29: Loop through the backlogged files from Step 26. Send each file's payload to MQTT Broker. Wait 500ms between each.
+Step 30: (NEW) After all backlogged files are successfully transmitted, delete them from LittleFS (LittleFS.remove(filename)).
+Step 31: (B) Go to Deep Sleep (Set timer for 30 seconds).
+Step 32: (A) Wake up from Deep Sleep (Start of next cycle).

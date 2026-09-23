@@ -1,0 +1,25 @@
+# =============================================================================
+# deploy/ - keep credentials and operator scratch out of git
+#
+# The root .gitignore already covers .env and .env.* by filename. This file adds
+# the deployment-specific artefacts.
+#
+# Railway keeps its configuration in the dashboard (project variables, volumes,
+# TCP proxies), so there is no checked-in state to ignore here - only things an
+# operator is likely to leave lying around.
+# =============================================================================
+
+# --- Generated runtime secrets ----------------------------------------------
+# A one-time credential printout, exported MQTT credentials, bcrypt hashes.
+# Never commit these: they bypass the dashboard's variable store.
+secrets/
+
+# --- Local certificate material ---------------------------------------------
+# Only relevant if you front the broker with your own TLS terminator, since
+# Railway's TCP proxy is raw TCP and hands you no certificate to store.
+*.pem
+*.key
+
+# --- Operator scratch --------------------------------------------------------
+# Notes taken during a deployment that should not be published.
+NOTES.local.md

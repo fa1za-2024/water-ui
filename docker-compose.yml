@@ -1,0 +1,263 @@
+# =============================================================================
+# Water UI - full local stack
+#
+#   docker compose up -d                    # infrastructure only (default)
+#   docker compose --profile app up -d      # + backend & frontend
+#   docker compose logs -f nodered          # follow a single service
+#   docker compose down                     # stop, keep data
+#   docker compose down -v                  # stop, WIPE all data
+#
+# Every variable has a working default via ${VAR:-default}, so the stack runs
+# without a .env file. Copy .env.example to .env to override anything.
+# =============================================================================
+
+name: water-ui
+
+services:
+  # --------------------------------------------------------------- databases
+  mysql:
+    image: mysql:8.0
+    container_name: water_ui_mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-supersecretroot}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-water_ui}
+      MYSQL_USER: ${MYSQL_USER:-water_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-supersecretuser}
+    ports:
+      # Loopback only (T-411): the databases are for this host's tooling, not the LAN.
+      # Set BIND_HOST=0.0.0.0 deliberately if you ever need remote access.
+      - "${BIND_HOST:-127.0.0.1}:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Dev-only grants so `prisma migrate dev` can create its shadow database.
+      # See the file header - never ship this to production.
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # mysqladmin ping succeeds as soon as the server accepts connections
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - water_ui_network
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: water_ui_influxdb
+    restart: unless-stopped
+    environment:
+      # On first boot only, the official image creates the org/bucket/token below.
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USERNAME:-waterui}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD:-waterui-password}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:-water_ui_org}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:-water_quality_bucket}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUXDB_RETENTION:-30d}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN:-waterui-dev-token-change-me}
+    ports:
+      # Loopback only (T-411): the API and Node-RED reach InfluxDB over the compose
+      # network; this mapping exists for host tooling (influx CLI, my verification
+      # recipes). Set BIND_HOST=0.0.0.0 deliberately if you need remote access.
+      - "${BIND_HOST:-127.0.0.1}:${INFLUXDB_PORT:-8086}:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+      - influxdb_config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - water_ui_network
+
+  # ------------------------------------------------------------ IoT pipeline
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: water_ui_mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"       # MQTT - the XIAO ESP32C3 connects here
+      # WebSockets remapped to 9002: MinIO's console already owns 9001.
+      - "${MQTT_WS_PORT:-9002}:9001"
+    volumes:
+      # Whole config dir (rw) so `mosquitto_passwd` can write the passwd file
+      - ./iot/mosquitto:/mosquitto/config
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - water_ui_network
+
+  nodered:
+    image: nodered/node-red:latest
+    container_name: water_ui_nodered
+    restart: unless-stopped
+    ports:
+      - "${NODERED_PORT:-1880}:1880"
+    environment:
+      TZ: ${TZ:-Asia/Bangkok}
+      # Read by the pipeline's function node via env.get() - see flows.json
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_ORG: ${INFLUXDB_ORG:-water_ui_org}
+      INFLUX_BUCKET: ${INFLUXDB_BUCKET:-water_quality_bucket}
+      INFLUX_TOKEN: ${INFLUXDB_TOKEN:-waterui-dev-token-change-me}
+      # The flow's "Notify Express" node (T-333). The default is the compose service,
+      # which only resolves once the `app` profile (T-401) is up; a dev run with the API
+      # on the host needs BACKEND_URL=http://host.docker.internal:5000 in .env - see
+      # .env.example. Wrong value = readings reach InfluxDB but never reach the dashboard.
+      BACKEND_URL: ${BACKEND_URL:-http://backend:5000}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      NODE_RED_CREDENTIAL_SECRET: ${NODE_RED_CREDENTIAL_SECRET:-water-ui-dev-credential-secret}
+    volumes:
+      # settings.js, flows.json and package.json all live here.
+      - ./iot/node-red:/data
+    # So BACKEND_URL=http://host.docker.internal:5000 works on Linux too (Docker Desktop's
+    # VM provides the name on its own). Harmless when the API runs in compose instead.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # IMPORTANT: the nodered/node-red image (Node-RED v5) no longer runs
+    # `npm install` against /data/package.json - its entrypoint.sh just starts
+    # Node-RED. So install the palette nodes first, then hand over to the stock
+    # entrypoint so its SIGTERM handling is preserved. Without this override the
+    # `telegram bot` / `telegram sender` nodes stay unregistered.
+    entrypoint: >
+      bash -c "cd /data && npm install --no-fund --no-audit --omit=dev && cd /usr/src/node-red && exec ./entrypoint.sh"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - water_ui_network
+
+  # ------ object storage
+  # NOTE: MinIO no longer publishes images on Docker Hub (minio/* returns
+  # "pull access denied"); the official registry is now quay.io.
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: water_ui_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      # Loopback only (T-411) - MinIO's console and S3 API are for this host.
+      - "${BIND_HOST:-127.0.0.1}:${MINIO_PORT:-9000}:9000"      # S3 API
+      - "${BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"  # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - water_ui_network
+
+  # One-shot job: create the profile-pictures bucket, then exit.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: water_ui_minio_init
+    restart: "no"
+    depends_on:
+      - minio
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-profile-pictures}
+    entrypoint: >
+      /bin/sh -c '
+      until mc alias set local "$$MINIO_ENDPOINT" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+        echo "minio-init: waiting for MinIO..."; sleep 2;
+      done;
+      mc mb --ignore-existing "local/$$MINIO_BUCKET_NAME";
+      mc anonymous set download "local/$$MINIO_BUCKET_NAME";
+      echo "minio-init: bucket $$MINIO_BUCKET_NAME is ready";'
+    networks:
+      - water_ui_network
+
+  # ------------------------------------------------------------- application
+  # Gated behind the "app" profile because backend/ has no code yet.
+  # Start with: docker compose --profile app up -d
+  backend:
+    profiles: ["app"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: water_ui_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 5000
+      DATABASE_URL: ${DATABASE_URL:-mysql://water_user:supersecretuser@mysql:3306/water_ui}
+      JWT_SECRET: ${JWT_SECRET:-your_super_secret_jwt_key_here}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:-waterui-dev-token-change-me}
+      INFLUXDB_ORG: ${INFLUXDB_ORG:-water_ui_org}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-water_quality_bucket}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-profile-pictures}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      # nginx sits in front of the API in the `app` profile and sets
+      # X-Forwarded-For, so Express must trust exactly that one hop or
+      # express-rate-limit cannot tell clients apart (and logs a ValidationError
+      # per request). See the Proxy trust block in src/index.ts.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # T-228 lifecycle tunables (defaults live in src/lifecycle.ts). The boot probe
+      # runs before the port opens, and SIGTERM drains Socket.io + the Prisma pool.
+      DB_BOOT_ATTEMPTS: ${DB_BOOT_ATTEMPTS:-3}
+      DB_BOOT_DELAY_MS: ${DB_BOOT_DELAY_MS:-1000}
+      DB_BOOT_TIMEOUT_MS: ${DB_BOOT_TIMEOUT_MS:-3500}
+      SHUTDOWN_LINGER_MS: ${SHUTDOWN_LINGER_MS:-2000}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-10000}
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    networks:
+      - water_ui_network
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: water_ui_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - backend
+    networks:
+      - water_ui_network
+
+volumes:
+  mysql_data:
+  influxdb_data:
+  influxdb_config:
+  mosquitto_data:
+  mosquitto_log:
+  minio_data:
+
+networks:
+  water_ui_network:
+    driver: bridge

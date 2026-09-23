@@ -1,0 +1,14 @@
+{
+    "name": "water-ui-simulator",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Standalone ESP32 (XIAO ESP32C3) MQTT simulator for the Water UI pipeline",
+    "type": "module",
+    "scripts": {
+        "simulate": "node simulate-esp32.js",
+        "simulate:unsafe": "node simulate-esp32.js --condition Unsafe"
+    },
+    "dependencies": {
+        "mqtt": "^5.16.0"
+    }
+}

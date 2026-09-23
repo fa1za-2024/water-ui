@@ -1,0 +1,24 @@
+# =============================================================================
+# Water UI - Node-RED build context filter
+#
+# The Dockerfile copies exactly four tracked files (flows.json, settings.js,
+# package.json, package-lock.json). Everything below is either runtime state
+# that must NOT be baked into the image or plain noise - the same set the root
+# .gitignore keeps out of the repository.
+# =============================================================================
+node_modules
+
+# Node-RED runtime state (editor sessions, runtime config, backups).
+.config.*
+.sessions.json
+.backup/
+.npm/
+lib/
+
+# Stored credentials (bot tokens etc.) - supplied at runtime, never baked in.
+flows_cred.json
+
+.git
+.gitignore
+Dockerfile
+.dockerignore

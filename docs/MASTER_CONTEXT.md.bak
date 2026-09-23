@@ -1,0 +1,109 @@
+# 🧠 WATER UI - MASTER PROJECT CONTEXT & AI MEMORY
+
+> **IMPORTANT INSTRUCTION FOR AI:** 
+> This file is the single, comprehensive source of truth for the **Water UI** project. Read and internalize this entire document before generating any code, database queries, or UI components. All code must strictly adhere to the architecture, naming conventions, and constraints defined below.
+
+---
+
+## 📑 TABLE OF CONTENTS
+1. Project Overview & System Architecture
+2. Technology Stack
+3. Critical Rules & Constraints for AI
+4. Database Schemas (MySQL & InfluxDB)
+5. IoT Data Pipeline & Node-RED Logic
+6. Functional Modules & API Endpoints
+7. UI/UX Requirements
+8. Project Folder Structure
+9. Pre-Development & DevOps Setup (Docker, .env, Prisma)
+
+---
+
+## 1. Project Overview & System Architecture
+
+**Water UI** is an IoT dashboard designed to monitor real-time water quality (pH, Turbidity) for rainwater harvesting storage in rural communities. It features real-time sensor tracking, interactive mapping, historical data analysis, and instant Telegram alerts for unsafe water conditions.
+
+### System Architecture Flow:
+1.  **IoT Edge Device** sends JSON payload to the **MQTT Broker (Mosquitto)**.
+2.  **Node-RED** subscribes to the MQTT topic, parses the payload, calculates derived statuses (`wq_status`, `batt_level`, `wifi_status`), writes to **InfluxDB**, and triggers **Telegram Alerts**.
+3.  **Node-RED** sends an HTTP POST request to the **Express API** to notify of new data.
+4.  **Express API** receives the trigger and uses **Socket.io** to push the new data to the **React Frontend**.
+5.  **React Frontend** updates Redux state, which instantly updates the **Chart.js** dashboard and **React Leaflet** map.
+6.  **Express API** queries **InfluxDB** for historical chart data and **MySQL (via Prisma)** for user authentication and profile management.
+
+---
+
+## 2. Technology Stack (Strict Adherence Required)
+
+| Layer | Technology | Notes |
+| :--- | :--- | :--- |
+| **Frontend** | React.js, Tailwind CSS | Use Shadcn/ui or Headless UI for components. |
+| **State Management** | Redux Toolkit (RTK) | **Must use RTK Query** for all API calls and caching. |
+| **Charts** | Chart.js | Dual Y-axes for pH and Turbidity. |
+| **Map** | **React Leaflet** | Primary choice. Color-coded markers (Green/Yellow/Red). |
+| **Real-Time** | Socket.io (Client & Server) | Used for live dashboard updates. |
+| **Backend** | Express.js (Node.js) | REST API + Socket.io server. |
+| **Auth** | JWT + bcrypt | Single user profile. **No RBAC**. |
+| **MySQL ORM** | Prisma | Type-safe database interactions. |
+| **Databases** | MySQL & InfluxDB | MySQL for relational metadata, InfluxDB for time-series data. |
+| **File Storage** | MinIO (or AWS S3) | Store profile pictures. Save URL in MySQL. |
+| **Excel Export** | `exceljs` (Backend) | Generate `.xlsx` dynamically on the server. |
+| **IoT Pipeline** | Node-RED, Mosquitto | Edge processing and MQTT broker. |
+| **DevOps** | Docker, Docker Compose | Orchestrate all 7+ services. |
+
+---
+
+## 3. Critical Rules & Constraints for AI
+
+1.  **NO RBAC:** This is a single-user system. Do not generate role-based access control code.
+2.  **UI Text vs DB Value:** The UI displays "Not Safe", but the database stores `"Unsafe"`. Map these correctly.
+3.  **Excel Export:** Must be generated on the **backend** using `exceljs`. The button must be at the **top** of the historical data table.
+4.  **Map Library:** Always use **`react-leaflet`**. Do not use Google Maps or Mapbox.
+5.  **Real-time Updates:** All live updates must flow through Socket.io -> Redux -> UI components. Do not use polling.
+6.  **InfluxDB Data Types:** Node-RED **must** use `parseFloat()` and `parseInt()` before writing to InfluxDB. Strings will break Chart.js.
+7.  **Date Handling:** Use Day.js or date-fns to format timestamps for Chart.js X-axis.
+
+---
+
+## 4. Database Schemas
+
+### 4.1 MySQL (Relational Data)
+**Table: `users`** (Single profile only, no roles)
+- `id` (INT, PK)
+- `first_name` (VARCHAR)
+- `last_name` (VARCHAR)
+- `email` (VARCHAR, UNIQUE)
+- `phone` (VARCHAR, UNIQUE)
+- `password_hash` (VARCHAR)
+- `profile_picture_url` (VARCHAR, NULL)
+- `created_at`, `updated_at` (TIMESTAMP)
+
+**Table: `boards`**
+- `id` (INT, PK)
+- `board_id` (VARCHAR, UNIQUE) - *Logical ID (e.g., "AA240238")*
+- `board_mac_address` (VARCHAR, UNIQUE) - *Hardware MAC*
+- `location_name` (VARCHAR)
+- `latitude` (DECIMAL)
+- `longitude` (DECIMAL)
+- `is_active` (BOOLEAN) - *Soft delete / toggle*
+- `created_at`, `updated_at` (TIMESTAMP)
+
+### 4.2 InfluxDB (Time-Series Data)
+- **Bucket:** `water_quality_bucket`
+- **Measurement:** `water_quality`
+- **Tags (Indexed):** `board_id`, `wq_status`, `batt_level`, `wifi_status`
+- **Fields (Values):** `pH` (Float), `turbidity` (Float), `batt_voltage` (Float), `rssi` (Integer)
+- **Timestamp:** `_time` (RFC3339)
+
+---
+
+## 5. IoT Data Pipeline & Node-RED Logic
+
+**Incoming MQTT Payload:**
+```json
+{
+  "boardID": "AA240238",
+  "pH": 12.75,
+  "turbidity": 25.00,
+  "batt_voltage": 3.4,
+  "rssi": -75
+}

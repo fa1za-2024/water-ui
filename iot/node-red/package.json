@@ -1,0 +1,9 @@
+{
+  "name": "water-ui-node-red",
+  "description": "Node-RED runtime for the Water UI IoT pipeline. The nodered/node-red image (Node-RED v5) no longer auto-installs /data/package.json, so docker-compose.yml overrides the entrypoint to run `npm install` here before starting Node-RED. Nodes listed here are installed into /data/node_modules.",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "node-red-contrib-telegrambot": "^19.0.0"
+  }
+}

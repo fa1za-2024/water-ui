@@ -1,0 +1,279 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include "esp_sleep.h"
+#include <time.h>
+#include <sys/time.h>
+#include <ArduinoJson.h>
+
+const String boardId = "PAGOH01";
+
+// WIFI
+char ssid[] = "SSID";
+char pass[] = "PASSWORD";
+
+// MQTT
+const char* mqtt_server = "IP ADDRESS";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// SENSOR PINS
+#define PH_PIN 2
+#define TURBIDITY_PIN 3
+#define BATTERY_PIN 4
+#define SENSOR_POWER_PIN 7
+
+// PH CALIBRATION
+float slope = -4.81, intercept = 19.34;
+
+// DEEP SLEEP CONSTANTS
+#define uS_TO_S_FACTOR 1000000ULL
+#define TIME_TO_SLEEP 300 //time in seconds, for 5 minutes = 300 seconds
+
+// NTP CONFIGURATION (Malaysia GMT+8)
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 28800;    
+const int   daylightOffset_sec = 0;   
+
+// DEEP SLEEP FUNCTION
+void goToDeepSleep() {
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    Serial.println("Going to deep sleep for 5 minutes...");
+    Serial.flush();
+    delay(1000);
+    esp_deep_sleep_start();
+}
+
+// SENSOR FILTERING FUNCTION
+float getFilteredVoltage(int pin) {
+    int samples[50];
+    
+    // 1. Collect 50 samples
+    for (int i = 0; i < 50; i++) {
+        samples[i] = analogReadMilliVolts(pin);
+        delay(10);
+    }
+    
+    // 2. Sort the array from lowest to highest (Bubble Sort)
+    for (int i = 0; i < 49; i++) {
+        for (int j = 0; j < 49 - i; j++) {
+            if (samples[j] > samples[j + 1]) {
+                int temp = samples[j];
+                samples[j] = samples[j + 1];
+                samples[j + 1] = temp;
+            }
+        }
+    }
+    
+    // 3. Sum the middle 30 values (discarding bottom 10 and top 10)
+    long sum = 0;
+    for (int i = 10; i < 40; i++) {
+        sum += samples[i];
+    }
+    
+    // 4. Calculate average of the 30 samples and convert millivolts to Volts
+    return (sum / 30.0) / 1000.0;
+}
+
+// WIFI FUNCTION (15-second timeout)
+void setup_wifi() {
+    Serial.print("Connecting to WiFi");
+    WiFi.begin(ssid, pass);
+    unsigned long wifiStart = millis();
+
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected");
+        Serial.print("ESP32 IP: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("\nWiFi connection FAILED (15-second timeout)");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        goToDeepSleep();
+    }
+}
+
+// NTP TIME FUNCTION
+void setup_time() {
+    Serial.print("Syncing time via NTP...");
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    
+    struct tm timeinfo;
+    unsigned long startSync = millis();
+    
+    // Wait up to 10 seconds for time to sync
+    while (!getLocalTime(&timeinfo) && millis() - startSync < 10000) {
+        Serial.print(".");
+        delay(500);
+    }
+    
+    if (getLocalTime(&timeinfo)) {
+        Serial.println("\nTime synchronized.");
+    } else {
+        Serial.println("\nFailed to synchronize time.");
+    }
+}
+
+// GET EPOCH MILLISECONDS (Returns raw integer for JSON serialization)
+uint64_t getEpochMilliseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return ((uint64_t)tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000ULL);
+}
+
+// MQTT RECONNECT WITH 10-SECOND TIMEOUT
+void reconnect() {
+    unsigned long mqttStart = millis();
+
+    while (!client.connected() && millis() - mqttStart < 10000) {
+        Serial.print("Connecting to MQTT...");
+        if (client.connect("ESP32Client")) {
+            Serial.println("connected");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(client.state());
+            Serial.println(" retrying in 2 seconds");
+            delay(2000);
+        }
+    }
+
+    if (!client.connected()) {
+        Serial.println("\nMQTT connection FAILED (10-second timeout)");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        goToDeepSleep();
+    }
+}
+
+// SETUP
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+
+    // SENSOR POWER CONTROL
+    pinMode(SENSOR_POWER_PIN, OUTPUT);
+    digitalWrite(SENSOR_POWER_PIN, LOW);
+
+    // WAKEUP REASON
+    Serial.println("Step 1 - Board Wakeup");
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    Serial.print("Wakeup reason : ");
+    Serial.println(wakeup_reason);
+
+    // TURN SENSOR POWER ON
+    Serial.println("\n Step 2 - Turn on sensors");
+    digitalWrite(SENSOR_POWER_PIN, HIGH);
+    
+    // SENSOR STABILISATION (10 seconds)
+    Serial.println("Waiting 10 seconds for sensor stabilisation...");
+    for (int i = 10; i > 0; i--) {
+        Serial.print("Starting in ");
+        Serial.print(i);
+        Serial.println(" seconds");
+        delay(1000);
+    }
+
+    Serial.println("\n Step 3 - Sensor Reading");
+    // PH SENSOR READING
+    float phVoltage = getFilteredVoltage(PH_PIN);
+    float ph = (slope * phVoltage) + intercept;
+
+    // TURBIDITY SENSOR READING
+    float espVoltage = getFilteredVoltage(TURBIDITY_PIN);
+    float realVoltage = espVoltage / 0.667;
+    float turbidity = (4.257 - realVoltage) * 38.94;
+
+    if (turbidity < 0) turbidity = 0;
+    if (turbidity > 25) turbidity = 25;
+
+    // BATTERY READING
+    float espBatVoltage = getFilteredVoltage(BATTERY_PIN);
+    float batteryVoltage = espBatVoltage * 2.0;
+
+    // SERIAL MONITOR
+    //Serial.print("pH Voltage: "); Serial.print(phVoltage, 3); Serial.println(" V");
+    Serial.print("pH Value : "); Serial.println(ph, 2);
+    //Serial.print("ESP Voltage: "); Serial.print(espVoltage, 3); Serial.println(" V");
+    //Serial.print("Sensor Voltage: "); Serial.print(realVoltage, 3); Serial.println(" V");
+    Serial.print("Turbidity Level: "); Serial.println(turbidity);
+    Serial.print("Battery Voltage: "); Serial.println(batteryVoltage);
+
+    // SENSOR POWER OFF
+    Serial.println("\n Step 4 - Turn off sensors");
+    digitalWrite(SENSOR_POWER_PIN, LOW);
+    pinMode(SENSOR_POWER_PIN, INPUT);
+
+    // CONNECT WIFI & SYNC TIME
+    Serial.println("\nStep 5 - Connect Wifi");
+    setup_wifi();
+    setup_time();
+    
+    int rssi = WiFi.RSSI();
+    Serial.print("\n RSSI : "); 
+    Serial.println(rssi);
+
+    // GET TIMESTAMP VARIABLE
+    uint64_t ts = getEpochMilliseconds();
+
+    // FORMAT DATE AND PRINT SERIAL MONITOR
+    time_t nowSeconds = ts / 1000;
+    struct tm timeinfo;
+    localtime_r(&nowSeconds, &timeinfo);
+    char timeString[20];
+    strftime(timeString, sizeof(timeString), "%d/%m/%Y %H:%M", &timeinfo);
+
+    Serial.print("Timestamp : "); 
+    Serial.println(timeString);
+
+    // MQTT SETUP
+    client.setServer(mqtt_server, 1883);
+    reconnect();
+    client.loop();
+
+    // DYNAMIC MQTT TOPIC & ARDUINOJSON PAYLOAD
+    //String boardId = WiFi.macAddress();
+    String mqttTopic = "sensors/" + boardId + "/data";
+    
+    JsonDocument doc;
+    doc["boardID"] = boardId;
+    doc["pH"] = serialized(String(ph, 2));
+    doc["turbidity"] = serialized(String(turbidity, 2));
+    doc["batt_voltage"] = serialized(String(batteryVoltage, 2));
+    doc["rssi"] = rssi;
+    doc["ts"] = ts;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+
+    // MQTT PUBLISH (QoS 0, Retain False)
+    Serial.println("\nSending MQTT data to: " + mqttTopic);
+    boolean mqttStatus = client.publish(mqttTopic.c_str(), jsonString.c_str(), false);
+    client.loop();
+
+    if (mqttStatus) {
+        Serial.println("\nMQTT Publish SUCCESS");
+        Serial.println(jsonString);
+        delay(5000);
+    } else {
+        Serial.println("\nMQTT Publish FAILED");
+    }
+
+    Serial.println("=================================\n");
+
+    // DISCONNECT & DEEP SLEEP
+    Serial.println("Closing connections...");
+    client.disconnect();    
+    delay(3000);            
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);   
+
+    goToDeepSleep();
+}
+
+void loop() {}

@@ -1,0 +1,261 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include "esp_sleep.h"
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+// WIFI
+char ssid[] = "SSID";
+char pass[] = "PASSWORD";
+
+// MQTT
+const char* mqtt_server = "IP ADDRESS";
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// SENSOR PINS
+const int phPin = 2, turbidityPin = 3, batteryPin = 4, sensorPowerPin = 7;
+
+// PH CALIBRATION
+float slope = -4.81, intercept = 19.34;
+
+// DEEP SLEEP
+#define uS_TO_S_FACTOR 1000000ULL
+#define TIME_TO_SLEEP 300
+
+// TELEGRAM
+#define BOTtoken "7955775155:AAF8Ce251LLnU357aTHGF1qblyCyQyl-F5"
+#define CHAT_ID "78786346755"
+WiFiClientSecure telegramClient;
+UniversalTelegramBot bot(BOTtoken, telegramClient);
+
+// SAVE ALERT STATUS AFTER DEEP SLEEP
+RTC_DATA_ATTR bool unsafeAlertSent = false;
+
+// WIFI FUNCTION
+void setup_wifi() {
+    Serial.print("Connecting to WiFi");
+    WiFi.begin(ssid, pass);
+    unsigned long wifiStart = millis();
+
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 60000) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWiFi connected");
+        Serial.print("ESP32 IP: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("\nWiFi connection FAILED");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        esp_sleep_enable_timer_wakeup(300 * uS_TO_S_FACTOR);
+        Serial.println("Retrying in 5 minutes...");
+        Serial.flush();
+        delay(1000);
+        esp_deep_sleep_start();
+    }
+}
+
+// MQTT RECONNECT WITH 1-MINUTE TIMEOUT
+void reconnect() {
+    unsigned long mqttStart = millis();
+
+    while (!client.connected() && millis() - mqttStart < 60000) {
+        Serial.print("Connecting to MQTT...");
+        if (client.connect("ESP32Client")) {
+            Serial.println("connected");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(client.state());
+            Serial.println(" retrying in 2 seconds");
+            delay(2000);
+        }
+    }
+
+    if (!client.connected()) {
+        Serial.println("\nMQTT connection FAILED (1-minute timeout)");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+        Serial.println("Going to deep sleep for 5 minutes to save battery...");
+        Serial.flush();
+        delay(1000);
+        esp_deep_sleep_start();
+    }
+}
+
+// SETUP
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    analogReadResolution(12);
+    analogSetAttenuation(ADC_11db);
+
+    // SENSOR POWER CONTROL
+    pinMode(sensorPowerPin, OUTPUT);
+    digitalWrite(sensorPowerPin, LOW);
+
+    // WAKEUP REASON
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    Serial.println("\n=========================");
+    Serial.print("Wakeup reason: ");
+    Serial.println(wakeup_reason);
+    Serial.println("=========================");
+
+    // TURN SENSOR POWER ON
+    digitalWrite(sensorPowerPin, HIGH);
+    Serial.println("Sensor power ON");
+
+    // SENSOR STABILISATION
+    Serial.println("Waiting 30 seconds for sensor stabilisation...");
+    for (int i = 30; i > 0; i--) {
+        Serial.print("Starting in ");
+        Serial.print(i);
+        Serial.println(" seconds");
+        delay(1000);
+    }
+
+    // PH SENSOR READING
+    long phTotal = 0;
+    for (int i = 0; i < 50; i++) {
+        phTotal += analogReadMilliVolts(phPin);
+        delay(10);
+    }
+
+    float phVoltage = (phTotal / 50.0) / 1000.0;
+    float ph = (slope * phVoltage) + intercept;
+
+    // TURBIDITY SENSOR READING
+    long turbTotal = 0;
+    for (int i = 0; i < 50; i++) {
+        turbTotal += analogReadMilliVolts(turbidityPin);
+        delay(10);
+    }
+
+    float espVoltage = (turbTotal / 50.0) / 1000.0;
+    
+    // Restore original sensor voltage
+    float realVoltage = espVoltage / 0.667;
+
+    // NTU FORMULA
+    float turbidity = (4.257 - realVoltage) * 38.94;
+
+    // LIMIT RANGE
+    if (turbidity < 0) turbidity = 0;
+    if (turbidity > 25) turbidity = 25;
+
+    // TURBIDITY LOGIC
+    String turbidityStatus = (turbidity <= 1) ? "Safe" : ((turbidity <= 5) ? "Acceptable" : "Not Safe");
+
+    // WATER QUALITY
+    String waterQuality;
+    if (ph >= 6.5 && ph <= 8.5 && turbidity <= 1) {
+        waterQuality = "Safe";
+    } else if (ph >= 6.5 && ph <= 9.0 && turbidity <= 5) {
+        waterQuality = "Acceptable";
+    } else {
+        waterQuality = "Not Safe";
+    }
+
+    // BATTERY
+    long batTotal = 0;
+    for (int i = 0; i < 50; i++) {
+        batTotal += analogReadMilliVolts(batteryPin);
+        delay(10);
+    }
+    float espBatVoltage = (batTotal / 50.0) / 1000.0;
+    float batteryVoltage = espBatVoltage * 2.0;
+
+    String batteryLevel = (batteryVoltage > 4.0) ? "Good" : ((batteryVoltage > 3.7) ? "Medium" : "Low");
+
+    // SERIAL MONITOR
+    Serial.println("\n SENSOR DATA ");
+    Serial.print("pH Voltage: "); Serial.print(phVoltage, 3); Serial.println(" V");
+    Serial.print("pH Value: "); Serial.println(ph, 2);
+    Serial.println();
+    Serial.print("ESP Voltage: "); Serial.print(espVoltage, 3); Serial.println(" V");
+    Serial.print("Sensor Voltage: "); Serial.print(realVoltage, 3); Serial.println(" V");
+    Serial.print("Turbidity Level: "); Serial.println(turbidity);
+    Serial.print("Water Quality: "); Serial.println(waterQuality);
+    Serial.print("Battery Voltage: "); Serial.println(batteryVoltage);
+    Serial.print("Battery Level: "); Serial.println(batteryLevel);
+
+    // SENSOR POWER OFF
+    digitalWrite(sensorPowerPin, LOW);
+    pinMode(sensorPowerPin, INPUT);
+    Serial.println("Sensor power OFF");
+
+    // CONNECT WIFI
+    setup_wifi();
+    telegramClient.setInsecure();
+
+    // WIFI SIGNAL
+    int rssi = WiFi.RSSI();
+    Serial.print("RSSI: "); Serial.println(rssi);
+
+    // MQTT SETUP
+    client.setServer(mqtt_server, 1883);
+    reconnect();
+    client.loop();
+
+    // JSON PAYLOAD
+    String jsonString = "{\n";
+    jsonString += " \"board_name\": \"XIAO-ESP32C3\",\n";
+    jsonString += " \"board_id\": \"" + WiFi.macAddress() + "\",\n";
+    jsonString += " \"ph\": " + String(ph, 2) + ",\n";
+    jsonString += " \"turbidity\": " + String(turbidity, 2) + ",\n";
+    jsonString += " \"water_quality\": \"" + waterQuality + "\",\n";
+    jsonString += " \"battery_voltage\": " + String(batteryVoltage, 2) + ",\n";
+    jsonString += " \"battery_level\": \"" + batteryLevel + "\",\n";
+    jsonString += " \"rssi\": " + String(rssi) + "\n}";
+
+    // MQTT PUBLISH
+    Serial.println("\nSending MQTT data...");
+    boolean mqttStatus = client.publish("esp32/data", jsonString.c_str(), true);
+    client.loop();
+
+    if (mqttStatus) {
+        Serial.println("\nMQTT Publish SUCCESS");
+        Serial.println(jsonString);
+        delay(5000);
+    } else {
+        Serial.println("\nMQTT Publish FAILED");
+    }
+
+    Serial.println("=================================\n");
+
+    // TELEGRAM ALERT
+    if (waterQuality == "Not Safe" && !unsafeAlertSent) {
+        unsafeAlertSent = true;
+        bot.sendMessage(CHAT_ID, "⚠️ WATER ALERT ⚠️\n\nWater quality is NOT SAFE!\n\npH Value: " + String(ph, 2) + "\nTurbidity Level: " + String(turbidity), "");
+        delay(3000);
+        Serial.println("Unsafe alert SENT");
+    }
+    // WATER SAFE AGAIN
+    else if (waterQuality == "Safe" && unsafeAlertSent) {
+        unsafeAlertSent = false;
+        bot.sendMessage(CHAT_ID, "☑️ WATER SAFE\n\nWater quality has returned to safe levels.\n\npH Value: " + String(ph, 2) + "\nTurbidity Level: " + String(turbidity), "");
+        delay(3000);
+        Serial.println("Safe message SENT");
+    }
+
+    // WIFI OFF
+    Serial.println("Closing secure connections...");
+    telegramClient.stop(); // 1. Explicitly close the Telegram HTTPS socket
+    client.disconnect();    // 2. Explicitly close the MQTT connection
+    delay(3000);            // 3. Give hardware memory buffers time to clear
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);   // 4. Safely kill physical Wi-Fi radio
+
+    // DEEP SLEEP
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    Serial.println("Going to deep sleep for 5 minutes...");
+    Serial.flush();
+    delay(1000);
+    esp_deep_sleep_start();
+}
+
+void loop() {}

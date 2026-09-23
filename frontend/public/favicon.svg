@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Water UI">
+    <rect width="32" height="32" rx="7" fill="#7c3aed" />
+    <path
+        d="M16 6.5c3.6 4.2 6.2 7.6 6.2 10.9a6.2 6.2 0 0 1-12.4 0c0-3.3 2.6-6.7 6.2-10.9z"
+        fill="#ffffff"
+    />
+    <path d="M16 12.5c1.7 2.1 2.7 3.7 2.7 5.1a2.7 2.7 0 1 1-5.4 0c0-1.4 1-3 2.7-5.1z" fill="#7c3aed" />
+</svg>
