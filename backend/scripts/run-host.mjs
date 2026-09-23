@@ -3,10 +3,10 @@
  * Run the API on the HOST, against the Compose containers (T-231).
  *
  * Why this exists: `backend/.env` is written for the container path, where the
- * database host is the Compose service name (`@mysql:`) and InfluxDB/MinIO are
- * `influxdb:8086` / `minio:9000`. Those names do not resolve from Windows, so a
- * host-run `node dist/index.js` cannot reach MySQL and every login fails - which
- * looks like a credentials bug rather than a connection one.
+ * database host is the Compose service name (`@mysql:`) and InfluxDB is
+ * `influxdb:8086`. Those names do not resolve from Windows, so a host-run
+ * `node dist/index.js` cannot reach MySQL and every login fails - which looks
+ * like a credentials bug rather than a connection one.
  *
  *   npm run start:host     # the built dist/ - fastest
  *   npm run dev:host       # tsx watch, rebuilds on save
@@ -16,6 +16,8 @@
  * every case. dotenv does not override variables that are already set, so what is
  * passed here wins over .env; every other .env value (JWT_SECRET, tokens, PORT)
  * is still loaded by the app itself.
+ *
+ * MinIO handling was removed with the avatar feature (T-1.7).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -50,7 +52,6 @@ function toHost(key, fallback) {
 
     if (key === 'DATABASE_URL') return value.replace('@mysql:', '@127.0.0.1:');
     if (key === 'INFLUXDB_URL') return value.replace('//influxdb:', '//127.0.0.1:');
-    if (key === 'MINIO_ENDPOINT') return value === 'minio' ? 'localhost' : value;
 
     return value;
 }
@@ -58,7 +59,6 @@ function toHost(key, fallback) {
 const overrides = {
     DATABASE_URL: toHost('DATABASE_URL', 'mysql://water_user:supersecretuser@127.0.0.1:3306/water_ui'),
     INFLUXDB_URL: toHost('INFLUXDB_URL', 'http://127.0.0.1:8086'),
-    MINIO_ENDPOINT: toHost('MINIO_ENDPOINT', 'localhost'),
 };
 
 if (!overrides.DATABASE_URL.includes('@')) {
@@ -66,22 +66,39 @@ if (!overrides.DATABASE_URL.includes('@')) {
     process.exit(1);
 }
 
-const [command, args] = useWatch ? ['tsx', ['watch', 'src/index.ts']] : ['node', ['dist/index.js']];
+/**
+ * Resolve the child command WITHOUT relying on PATH.
+ *
+ * `tsx` is a devDependency, so its binary only lands on PATH when npm itself runs
+ * the script. Launching this file directly (`node scripts/run-host.mjs --dev`)
+ * used to fail with "'tsx' is not recognized as an internal or external command".
+ * Pointing at the real entry points removes that hidden dependency, and both are
+ * plain node invocations, so no shell (and no `.cmd` shim) is needed anywhere.
+ */
+const TSX_CLI = path.join(backendDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+const DIST_ENTRY = path.join(backendDir, 'dist', 'index.js');
 
-if (!useWatch && !existsSync(path.join(backendDir, 'dist', 'index.js'))) {
+if (useWatch && !existsSync(TSX_CLI)) {
+    console.error('[start:host] tsx is not installed - run `npm install` first.');
+    process.exit(1);
+}
+
+if (!useWatch && !existsSync(DIST_ENTRY)) {
     console.error('[start:host] dist/index.js is missing - run `npm run build` first.');
     process.exit(1);
 }
 
+const [command, args] = useWatch
+    ? [process.execPath, [TSX_CLI, 'watch', 'src/index.ts']]
+    : [process.execPath, [DIST_ENTRY]];
+
 console.log('[start:host] starting the API against the Compose services on localhost');
 console.log(`[start:host]   DATABASE_URL   = ${overrides.DATABASE_URL.replace(/:[^:@/]*@/, ':****@')}`);
 console.log(`[start:host]   INFLUXDB_URL   = ${overrides.INFLUXDB_URL}`);
-console.log(`[start:host]   MINIO_ENDPOINT = ${overrides.MINIO_ENDPOINT}`);
 
 const child = spawn(command, args, {
     cwd: backendDir,
     stdio: 'inherit',
-    shell: process.platform === 'win32' && useWatch, // only the tsx .cmd shim needs a shell
     env: { ...process.env, ...overrides },
 });
 

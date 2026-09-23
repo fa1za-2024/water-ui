@@ -4,17 +4,17 @@
         "type": "tab",
         "label": "Water Quality Pipeline",
         "disabled": false,
-        "info": "# Water UI - MQTT to InfluxDB pipeline\n\n`sensors/+/data` (XIAO ESP32C3) -> **Validate + derive statuses** -> three branches:\n\n1. **InfluxDB write** - line protocol POST to `/api/v2/write` (tags: board_id, wq_status, batt_level, wifi_status; fields: pH, turbidity, batt_voltage, rssi)\n2. **Express notify** - POST `/api/internal/sensor-update` so the API can push over Socket.io\n3. **Alerts** - `wq_status == \"Unsafe\"` -> rate limited to 1 per 15 min -> Telegram\n\nThresholds live in the function node and are documented in MASTER_CONTEXT.md section 5.3.\nInfluxDB URL/org/bucket/token come from container environment variables via `env.get()`. The MQTT broker host is substituted at flow-load time from `MQTT_HOST` (compose: the `mosquitto` service name; Railway: the broker's private domain)."
+        "info": "# Water UI - MQTT to InfluxDB pipeline\n\n`sensors/+/data` (XIAO ESP32C3) -> **Validate + derive statuses** -> three branches:\n\n1. **InfluxDB write** - line protocol POST to `/api/v2/write` (tags: board_id, wq_status, batt_level, wifi_status; fields: pH, turbidity, batt_voltage, rssi)\n2. **Express notify** - POST `/api/internal/sensor-update` so the API can push over Socket.io\n3. **Alerts** - `wq_status == \"Unsafe\"` -> rate limited to 1 per 15 min -> Telegram\n\nThresholds live in the function node and are documented in MASTER_CONTEXT.md section 5.3.\nInfluxDB URL/org/bucket/token come from container environment variables via `env.get()`. The MQTT broker host is substituted at flow-load time from `MQTT_HOST`, and connects to the external EMQX Serverless cluster over TLS on 8883; the username/password come from the MQTT_USERNAME/MQTT_PASSWORD env vars substituted into flows_cred.json."
     },
     {
         "id": "mqtt_broker",
         "type": "mqtt-broker",
-        "name": "Mosquitto (broker = MQTT_HOST)",
+        "name": "EMQX Serverless (broker = MQTT_HOST)",
         "broker": "${MQTT_HOST}",
-        "port": "1883",
+        "port": "8883",
         "clientid": "water-ui-nodered",
         "autoConnect": true,
-        "usetls": false,
+        "usetls": true,
         "protocolVersion": "4",
         "keepalive": "60",
         "cleansession": true,

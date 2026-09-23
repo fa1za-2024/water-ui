@@ -4,34 +4,31 @@
  * ============================================================================
  *
  * Publishes pH / turbidity / battery / RSSI telemetry as JSON over MQTT to the
- * Mosquitto broker, which Node-RED consumes and writes to InfluxDB.
+ * external EMQX Serverless broker over TLS, which Node-RED consumes and writes
+ * to InfluxDB.
  *
- *   ESP32C3 --MQTT(sensors/<BOARD_ID>/data)--> Mosquitto --> Node-RED --> InfluxDB
+ *   ESP32C3 --MQTT/TLS(sensors/<BOARD_ID>/data)--> EMQX --> Node-RED --> InfluxDB
  *
  * Board:    Seeed Studio XIAO ESP32C3   (Arduino core: esp32 by Espressif)
  * Library:  PubSubClient by Nick O'Leary  (Library Manager: "PubSubClient")
  *
- * QUICK START - LOCAL LAN
- *   1. Fill in WIFI_SSID / WIFI_PASSWORD / MQTT_HOST below.
- *      MQTT_HOST is the LAN IP of the machine running `docker compose up -d`
- *      (Windows: `ipconfig` -> IPv4 Address). 127.0.0.1 will NOT work.
- *   2. Leave MQTT_USE_TLS at 0 and MQTT_USER / MQTT_PASSWORD empty.
+ * QUICK START - EXTERNAL BROKER (EMQX Serverless)
+ *   1. Fill in WIFI_SSID / WIFI_PASSWORD below.
+ *   2. MQTT_HOST / MQTT_PORT / MQTT_USER / MQTT_PASSWORD / MQTT_CA_CERT are
+ *      already set for the EMQX Serverless cluster documented in
+ *      docs/emqx broker.txt. MQTT_USE_TLS is 1 because that broker is TLS-only
+ *      (port 8883).
  *   3. Set BOARD_ID to the same value as boards.board_id in MySQL.
  *   4. Calibrate the three sensor constants further down.
  *   5. Flash, then open the Serial Monitor at 115200 baud.
  *
- * QUICK START - PRODUCTION (Railway)
- *   1. MQTT_HOST = the Mosquitto service's TCP proxy host, i.e.
- *      RAILWAY_TCP_PROXY_DOMAIN (e.g. shuttle.proxy.rlwy.net). NOT the
- *      *.railway.internal name - that only resolves inside Railway.
- *   2. MQTT_PORT = RAILWAY_TCP_PROXY_PORT (a high random port), NOT 1883.
- *   3. Leave MQTT_USE_TLS at 0: Railway's TCP proxy is raw TCP and does not
- *      terminate TLS, so there is nothing to verify.
- *   4. MQTT_USER / MQTT_PASSWORD = the MQTT_USERNAME / MQTT_PASSWORD service
- *      variables set on the Mosquitto service. The proxied listener rejects
- *      anonymous clients, so both are required.
- *   5. Read the security note in deploy/railway/README.md first: those
- *      credentials and every reading cross the public internet in the clear.
+ *   SECURITY: MQTT_USER / MQTT_PASSWORD are deliberately left blank. Copy them
+ *   from docs/emqx broker.txt, which is git-ignored and stays on the developer's
+ *   machine - real broker credentials must never be committed to this public repo.
+ *
+ * QUICK START - LOCAL LAN (self-hosted Mosquitto, if ever re-added)
+ *   1. Set MQTT_HOST to the LAN IP of the broker (127.0.0.1 will NOT work).
+ *   2. Set MQTT_USE_TLS to 0 and clear MQTT_USER / MQTT_PASSWORD.
  *
  * NOTE ON QoS: PubSubClient can only PUBLISH at QoS 0, so QoS 2 subscriptions
  * in Node-RED are satisfied with QoS 0 delivery. See docs/mqtt-topics.md.
@@ -46,58 +43,37 @@
 // ---------------------------------------------------------------------------
 
 // --- TLS switch -------------------------------------------------------------
-// 0 = plaintext MQTT. Correct on a trusted LAN, and also correct for Railway:
-//     its TCP proxy is raw TCP and does not terminate TLS, so there is no
-//     broker certificate to verify.
-// 1 = MQTT over TLS on 8883. Only for a broker you have fronted with your own
-//     TLS-terminating proxy; flipping this also requires MQTT_CA_CERT below and
-//     a real MQTT_USER/MQTT_PASSWORD.
-//
-// Encryption and authentication are independent: on Railway the connection is
-// authenticated but NOT encrypted.
-#define MQTT_USE_TLS     0
+// 1 = MQTT over TLS on 8883. Required by the external EMQX Serverless broker,
+//     whose only MQTT listener is TLS.
+// 0 = plaintext MQTT, for a trusted LAN broker only (no certificate to verify).
+#define MQTT_USE_TLS     1
 
 #define WIFI_SSID        "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD    "YOUR_WIFI_PASSWORD"
 
-// LAN development: the LAN IP of the host running `docker compose up -d`
-// (127.0.0.1 will NOT work).
-// Production (Railway): the TCP proxy host on the Mosquitto service ->
-//   Settings -> Networking -> TCP Proxy  (RAILWAY_TCP_PROXY_DOMAIN), e.g.
-//   shuttle.proxy.rlwy.net
-// NOT the *.railway.internal private name, which only resolves inside Railway.
-#define MQTT_HOST        "192.168.1.100"
+// External EMQX Serverless broker - see docs/emqx broker.txt.
+// The self-hosted Mosquitto (and its Railway TCP proxy) has been retired, so
+// there is no LAN/Railway host to choose between any more.
+#define MQTT_HOST        "n1119107.ala.asia-southeast1.emqxsl.com"
 
 #if MQTT_USE_TLS
   #define MQTT_PORT      8883
 #else
-  // Plaintext. LAN: leave at 1883. Railway: set this to the proxy's own port
-  // (RAILWAY_TCP_PROXY_PORT, a high random number) - NOT 1883, which is the
-  // private, never-proxied listener that only Railway services can reach.
+  // Plaintext fallback for a LAN broker.
   #define MQTT_PORT      1883
 #endif
 
-// Leave blank ONLY while mosquitto has `listener_allow_anonymous true`, which is
-// local development. The proxied production listener rejects anonymous clients,
-// so both values must be set to the MQTT_USERNAME / MQTT_PASSWORD variables on
-// the Mosquitto service.
+// EMQX Serverless authenticates every listener, so both values are required.
+// Fill them in from docs/emqx broker.txt, which is git-ignored - never commit
+// real broker credentials to this public repository.
 #define MQTT_USER        ""
 #define MQTT_PASSWORD    ""
 
 #if MQTT_USE_TLS
 // --- CA certificate ---------------------------------------------------------
-// VERIFY THIS AGAINST THE SERVER. Do not trust a copy pasted from a forum.
-//
-// Only used with MQTT_USE_TLS=1, i.e. against a broker you fronted with your
-// own TLS-terminating proxy. Railway's TCP proxy does NOT do TLS, so this block
-// compiles out on the Railway path.
-//
-// Paste the CA that signed YOUR broker's certificate (for a Let's Encrypt leaf
-// that is ISRG Root X1, valid until 2035, so it is a set-and-forget value):
-//
-//   curl -sS https://letsencrypt.org/certs/isrgrootx1.pem
-//
-// then paste the whole PEM block between the markers, replacing everything.
+// The EMQX Serverless certificate chains to DigiCert Global Root G2. This is the
+// CA supplied with the cluster (see docs/emqxsl-ca.crt), pinned here so the
+// device verifies the broker it is told to trust.
 //
 // WHY NOT setInsecure():
 //   It skips verification entirely. Anyone able to intercept traffic could then
@@ -107,7 +83,26 @@
 //   nothing.
 static const char MQTT_CA_CERT[] PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
-REPLACE_THIS_ENTIRE_BLOCK_WITH_THE_CONTENTS_OF_isrgrootx1.pem
+MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
+MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
+MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
+b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
+2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
+1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
+q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
+tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
+vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
+5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
+1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
+NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
+Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
+8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
+pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
+MrY=
 -----END CERTIFICATE-----
 )EOF";
 #endif

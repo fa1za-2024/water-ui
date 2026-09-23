@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h> // Required for MQTTS (TLS/SSL)
 #include <PubSubClient.h>
 #include "esp_sleep.h"
 #include <time.h>
@@ -7,13 +8,21 @@
 
 const String boardId = "PAGOH01";
 
-// WIFI
+// WIFI CREDENTIALS
 char ssid[] = "SSID";
 char pass[] = "PASSWORD";
 
-// MQTT
-const char* mqtt_server = "IP ADDRESS";
-WiFiClient espClient;
+// EMQX BROKER CREDENTIALS
+// Copy mqtt_username / mqtt_password from docs/emqx broker.txt, which is
+// git-ignored and stays on the developer's machine. Never commit real broker
+// credentials to this public repository.
+const char* mqtt_server = "n1119107.ala.asia-southeast1.emqxsl.com";
+const int mqtt_port = 8883;
+const char* mqtt_username = "";
+const char* mqtt_password = "";
+
+// SSL CLIENT SETUP
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 // SENSOR PINS
@@ -27,7 +36,7 @@ float slope = -4.81, intercept = 19.34;
 
 // DEEP SLEEP CONSTANTS
 #define uS_TO_S_FACTOR 1000000ULL
-#define TIME_TO_SLEEP 300 //time in seconds, for 5 minutes = 300 seconds
+#define TIME_TO_SLEEP 300 // 5 minutes = 300 seconds
 
 // NTP CONFIGURATION (Malaysia GMT+8)
 const char* ntpServer = "pool.ntp.org";
@@ -53,7 +62,7 @@ float getFilteredVoltage(int pin) {
         delay(10);
     }
     
-    // 2. Sort the array from lowest to highest (Bubble Sort)
+    // 2. Sort array (Bubble Sort)
     for (int i = 0; i < 49; i++) {
         for (int j = 0; j < 49 - i; j++) {
             if (samples[j] > samples[j + 1]) {
@@ -64,17 +73,16 @@ float getFilteredVoltage(int pin) {
         }
     }
     
-    // 3. Sum the middle 30 values (discarding bottom 10 and top 10)
+    // 3. Average middle 30 values
     long sum = 0;
     for (int i = 10; i < 40; i++) {
         sum += samples[i];
     }
     
-    // 4. Calculate average of the 30 samples and convert millivolts to Volts
     return (sum / 30.0) / 1000.0;
 }
 
-// WIFI FUNCTION (15-second timeout)
+// WIFI FUNCTION
 void setup_wifi() {
     Serial.print("Connecting to WiFi");
     WiFi.begin(ssid, pass);
@@ -105,7 +113,6 @@ void setup_time() {
     struct tm timeinfo;
     unsigned long startSync = millis();
     
-    // Wait up to 10 seconds for time to sync
     while (!getLocalTime(&timeinfo) && millis() - startSync < 10000) {
         Serial.print(".");
         delay(500);
@@ -118,20 +125,25 @@ void setup_time() {
     }
 }
 
-// GET EPOCH MILLISECONDS (Returns raw integer for JSON serialization)
+// GET EPOCH MILLISECONDS
 uint64_t getEpochMilliseconds() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return ((uint64_t)tv.tv_sec * 1000ULL) + (tv.tv_usec / 1000ULL);
 }
 
-// MQTT RECONNECT WITH 10-SECOND TIMEOUT
+// MQTT RECONNECT WITH AUTHENTICATION
 void reconnect() {
     unsigned long mqttStart = millis();
 
+    // Generate dynamic client ID based on Board ID
+    String clientId = "ESP32_" + boardId + "_" + String(random(0xffff), HEX);
+
     while (!client.connected() && millis() - mqttStart < 10000) {
-        Serial.print("Connecting to MQTT...");
-        if (client.connect("ESP32Client")) {
+        Serial.print("Connecting to EMQX MQTT...");
+        
+        // Pass Client ID, Username, and Password to EMQX
+        if (client.connect(clientId.c_str(), mqtt_username, mqtt_password)) {
             Serial.println("connected");
         } else {
             Serial.print("failed, rc=");
@@ -196,11 +208,8 @@ void setup() {
     float espBatVoltage = getFilteredVoltage(BATTERY_PIN);
     float batteryVoltage = espBatVoltage * 2.0;
 
-    // SERIAL MONITOR
-    //Serial.print("pH Voltage: "); Serial.print(phVoltage, 3); Serial.println(" V");
+    // SERIAL MONITOR LOGGING
     Serial.print("pH Value : "); Serial.println(ph, 2);
-    //Serial.print("ESP Voltage: "); Serial.print(espVoltage, 3); Serial.println(" V");
-    //Serial.print("Sensor Voltage: "); Serial.print(realVoltage, 3); Serial.println(" V");
     Serial.print("Turbidity Level: "); Serial.println(turbidity);
     Serial.print("Battery Voltage: "); Serial.println(batteryVoltage);
 
@@ -231,13 +240,14 @@ void setup() {
     Serial.print("Timestamp : "); 
     Serial.println(timeString);
 
-    // MQTT SETUP
-    client.setServer(mqtt_server, 1883);
+    // TLS / SSL CONFIGURATION
+    espClient.setInsecure(); // Skip certificate verification for EMQX SSL
+    client.setServer(mqtt_server, mqtt_port);
+    
     reconnect();
     client.loop();
 
     // DYNAMIC MQTT TOPIC & ARDUINOJSON PAYLOAD
-    //String boardId = WiFi.macAddress();
     String mqttTopic = "sensors/" + boardId + "/data";
     
     JsonDocument doc;
@@ -251,7 +261,7 @@ void setup() {
     String jsonString;
     serializeJson(doc, jsonString);
 
-    // MQTT PUBLISH (QoS 0, Retain False)
+    // MQTT PUBLISH
     Serial.println("\nSending MQTT data to: " + mqttTopic);
     boolean mqttStatus = client.publish(mqttTopic.c_str(), jsonString.c_str(), false);
     client.loop();
@@ -259,7 +269,7 @@ void setup() {
     if (mqttStatus) {
         Serial.println("\nMQTT Publish SUCCESS");
         Serial.println(jsonString);
-        delay(5000);
+        delay(2000);
     } else {
         Serial.println("\nMQTT Publish FAILED");
     }
@@ -269,7 +279,7 @@ void setup() {
     // DISCONNECT & DEEP SLEEP
     Serial.println("Closing connections...");
     client.disconnect();    
-    delay(3000);            
+    delay(1000);            
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);   
 

@@ -23,7 +23,7 @@
  *
  * Everything is best-effort on shutdown: `stop` must not throw because the broker went away.
  */
-import mqtt, { type MqttClient } from 'mqtt';
+import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 
 import {
     IDLE_SIMULATION_STATUS,
@@ -72,6 +72,39 @@ let lastRun: FinishedSimulation | null = null;
 /** `mqtt://localhost` + 1883 -> `mqtt://localhost:1883` (section 3.1). */
 export function buildBrokerUrl(brokerUrl: string, port: number): string {
     return `${brokerUrl}:${port}`;
+}
+
+/**
+ * MQTT connection options shared by the simulator and the ingest service (T-3.4).
+ *
+ * The broker is no longer self-hosted: production and development both point at the
+ * external EMQX Serverless broker, which requires authentication and, on port 8883,
+ * TLS. Two env-driven pieces:
+ *
+ *   MQTT_USERNAME / MQTT_PASSWORD  - applied to every connection when set.
+ *   MQTT_CA_CERT                   - a PEM string added to the trust store for TLS
+ *                                    URLs. Optional because EMQX's chain roots at
+ *                                    DigiCert Global Root G2, which Node already
+ *                                    trusts; it is here for pinned/self-signed CAs.
+ *
+ * TLS is inferred from the URL scheme, so `mqtts://host` is encrypted and verified
+ * while `mqtt://host` (a LAN broker) stays plaintext.
+ */
+export function buildMqttOptions(url: string, overrides: IClientOptions = {}): IClientOptions {
+    const options: IClientOptions = { ...overrides };
+
+    const username = process.env.MQTT_USERNAME;
+    const password = process.env.MQTT_PASSWORD;
+    if (username) options.username = username;
+    if (password) options.password = password;
+
+    if (/^(mqtts|ssl|wss|https):\/\//i.test(url)) {
+        options.rejectUnauthorized = true;
+        const ca = process.env.MQTT_CA_CERT;
+        if (ca) options.ca = ca;
+    }
+
+    return options;
 }
 
 export function getSimulationStatus(): SimulationStatus {
@@ -124,14 +157,17 @@ export async function startSimulation(config: SimulatorConfig): Promise<Simulati
 
     lastError = null;
 
-    const client = mqtt.connect(url, {
-        clientId: `water-ui-simulator-${Math.random().toString(16).slice(2, 10)}`,
-        clean: true,
-        connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
-        // Like the firmware's Last Will: if this process dies, the broker still marks the
-        // board offline on the retained status topic.
-        will: { topic: statusTopic, payload: 'offline', qos: 0, retain: true },
-    });
+    const client = mqtt.connect(
+        url,
+        buildMqttOptions(url, {
+            clientId: `water-ui-simulator-${Math.random().toString(16).slice(2, 10)}`,
+            clean: true,
+            connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
+            // Like the firmware's Last Will: if this process dies, the broker still marks the
+            // board offline on the retained status topic.
+            will: { topic: statusTopic, payload: 'offline', qos: 0, retain: true },
+        })
+    );
 
     await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -143,7 +179,7 @@ export async function startSimulation(config: SimulatorConfig): Promise<Simulati
             reject(
                 new SimulatorUnavailableError(
                     `No answer from the MQTT broker at ${url} within ${MQTT_CONNECT_TIMEOUT_MS} ms. ` +
-                        'Check the address and that the broker is running (docker compose up -d mosquitto).'
+                        'Check the broker address and that the external EMQX cluster is reachable.'
                 )
             );
         }, MQTT_CONNECT_TIMEOUT_MS);

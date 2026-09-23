@@ -4,6 +4,9 @@
  * MASTER_CONTEXT.md Rule 1: this is a SINGLE-user system, so `PublicUser` is
  * the only user shape the API ever returns - never the raw row, which would
  * leak `passwordHash`.
+ *
+ * The `profilePictureUrl` field was removed with the MinIO avatar feature
+ * (T-1.4/T-1.6).
  */
 import type { Request } from 'express';
 
@@ -14,7 +17,6 @@ export interface PublicUser {
     lastName: string;
     email: string;
     phone: string;
-    profilePictureUrl: string | null;
     createdAt: string;
     updatedAt: string;
 }
@@ -26,7 +28,6 @@ export const publicUserSelect = {
     lastName: true,
     email: true,
     phone: true,
-    profilePictureUrl: true,
     createdAt: true,
     updatedAt: true,
 } as const;
@@ -38,7 +39,6 @@ interface PublicUserRow {
     lastName: string;
     email: string;
     phone: string;
-    profilePictureUrl: string | null;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -51,7 +51,6 @@ export function toPublicUser(row: PublicUserRow): PublicUser {
         lastName: row.lastName,
         email: row.email,
         phone: row.phone,
-        profilePictureUrl: row.profilePictureUrl,
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
     };

@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { Camera, KeyRound, LoaderCircle, User } from 'lucide-react';
+import { KeyRound, LoaderCircle, User } from 'lucide-react';
 
 import {
     useChangePasswordMutation,
     useGetProfileQuery,
     useUpdateProfileMutation,
-    useUploadAvatarMutation,
 } from '../../api/authApi.js';
 import { userUpdated } from '../../store/slices/authSlice.js';
 import { describeApiFailure } from '../../utils/apiError.js';
@@ -22,19 +21,18 @@ import Modal from '../ui/Modal.jsx';
  *   GET  /api/users/profile          -> 200 { user }
  *   PUT  /api/users/profile          -> 200 { user }  | 400 empty/invalid, 409 duplicate email or phone
  *   PUT  /api/users/password         -> 200 { message } | 401 wrong current, 400 weak/reused
- *   POST /api/users/upload-avatar    -> 200 { profilePictureUrl, user } | 413 >2 MB, 415 not PNG/JPEG/WebP
  *
- * The avatar is uploaded as soon as a file is chosen (the endpoint is a single multipart
- * POST with no "pending" state), and every successful write dispatches `userUpdated` so
- * the header's name and picture refresh immediately.
+ * Every successful write dispatches `userUpdated` so the header's name refreshes
+ * immediately.
+ *
+ * The avatar picture was removed together with MinIO (T-1.1): the profile is rendered
+ * with the user's initials, which was always the fallback.
  *
  * Password change (A21/T-204) is a separate section with its own submit: it needs the
  * current password, a new one and a confirmation, and it deliberately does not touch the
  * profile form or the session.
  */
-const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 const MIN_PASSWORD_LENGTH = 8;
-const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 const EMPTY_FORM = { firstName: '', lastName: '', email: '', phone: '' };
 const EMPTY_PASSWORD_FORM = { current: '', next: '', confirm: '' };
@@ -45,14 +43,12 @@ export default function ProfileModal({ open, onClose }) {
     // `skip` until it is opened, so the app does not fetch the profile on every page.
     const { data, isLoading, isError, error } = useGetProfileQuery(undefined, { skip: !open });
     const [updateProfile, { isLoading: isSaving }] = useUpdateProfileMutation();
-    const [uploadAvatar, { isLoading: isUploading }] = useUploadAvatarMutation();
     const [changePassword, { isLoading: isChangingPassword }] = useChangePasswordMutation();
 
     const [form, setForm] = useState(EMPTY_FORM);
     const [feedback, setFeedback] = useState(null);
     const [passwordForm, setPasswordForm] = useState(EMPTY_PASSWORD_FORM);
     const [passwordFeedback, setPasswordFeedback] = useState(null);
-    const fileInputRef = useRef(null);
 
     const profile = data?.user ?? null;
 
@@ -142,7 +138,7 @@ export default function ProfileModal({ open, onClose }) {
             } else {
                 setPasswordFeedback({
                     kind: 'error',
-                    text: describeFailure(failure, 'Could not update the password.'),
+                    text: describeApiFailure(failure, 'Could not update the password.'),
                 });
             }
         }
@@ -157,38 +153,7 @@ export default function ProfileModal({ open, onClose }) {
             dispatch(userUpdated(result.user));
             setFeedback({ kind: 'success', text: 'Profile updated.' });
         } catch (failure) {
-            setFeedback({ kind: 'error', text: describeFailure(failure, 'Could not save the profile.') });
-        }
-    }
-
-    async function handleAvatarChange(event) {
-        const file = event.target.files?.[0];
-        setFeedback(null);
-
-        if (!file) return;
-
-        // Check locally first so an obviously wrong file never leaves the browser.
-        if (!ALLOWED_TYPES.includes(file.type)) {
-            setFeedback({ kind: 'error', text: 'Only PNG, JPEG or WebP images are allowed.' });
-            event.target.value = '';
-            return;
-        }
-
-        if (file.size > MAX_AVATAR_BYTES) {
-            setFeedback({ kind: 'error', text: 'That image is larger than 2 MB.' });
-            event.target.value = '';
-            return;
-        }
-
-        try {
-            const result = await uploadAvatar(file).unwrap();
-            dispatch(userUpdated(result.user));
-            setFeedback({ kind: 'success', text: 'Profile picture updated.' });
-        } catch (failure) {
-            setFeedback({ kind: 'error', text: describeFailure(failure, 'Could not upload the picture.') });
-        } finally {
-            // Allow re-picking the same file.
-            event.target.value = '';
+            setFeedback({ kind: 'error', text: describeApiFailure(failure, 'Could not save the profile.') });
         }
     }
 
@@ -232,50 +197,20 @@ export default function ProfileModal({ open, onClose }) {
 
             {isError ? (
                 <p role="alert" className="rounded-md bg-red-50 p-3 text-sm font-medium text-red-600">
-                    {describeFailure(error, 'Could not load the profile.')}
+                    {describeApiFailure(error, 'Could not load the profile.')}
                 </p>
             ) : null}
 
             {profile ? (
                 <div className="space-y-5">
-                    {/* Avatar + upload */}
+                    {/* Avatar (initials). The picture upload was removed with MinIO (T-1.1). */}
                     <div className="flex items-center gap-4">
-                        {profile.profilePictureUrl ? (
-                            <img
-                                src={profile.profilePictureUrl}
-                                alt="Current profile picture"
-                                className="h-16 w-16 rounded-full object-cover"
-                            />
-                        ) : (
-                            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-brand-100 text-lg font-semibold text-brand-700">
-                                {initials || <User className="h-6 w-6" aria-hidden="true" />}
-                            </span>
-                        )}
-
-                        <div>
-                            <button
-                                type="button"
-                                onClick={() => fileInputRef.current?.click()}
-                                disabled={isUploading}
-                                className="flex items-center gap-2 rounded-md bg-gray-100 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                                {isUploading ? (
-                                    <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-                                ) : (
-                                    <Camera className="h-4 w-4" aria-hidden="true" />
-                                )}
-                                {isUploading ? 'Uploading…' : 'Change picture'}
-                            </button>
-                            <p className="mt-1 text-xs text-gray-400">PNG, JPEG or WebP · max 2 MB</p>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                name="avatar"
-                                accept="image/png,image/jpeg,image/webp"
-                                onChange={handleAvatarChange}
-                                className="hidden"
-                            />
-                        </div>
+                        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-brand-100 text-lg font-semibold text-brand-700">
+                            {initials || <User className="h-6 w-6" aria-hidden="true" />}
+                        </span>
+                        <p className="text-sm text-gray-500">
+                            {[profile.firstName, profile.lastName].filter(Boolean).join(' ') || 'Signed in'}
+                        </p>
                     </div>
 
                     {/* Editable fields */}
@@ -416,17 +351,9 @@ function Field({ id, label, type = 'text', value, onChange, autoComplete }) {
     );
 }
 
-/**
- * Map an RTK Query rejection to something actionable. The cases the API actually produces:
+/*
+ * Rejections are mapped by the shared reader (`src/utils/apiError.js`), which understands
+ * the `{ error }` envelope the API actually sends. The cases the API produces here:
  * 400 (empty body / invalid field), 409 (duplicate email or phone), 404 (no profile yet),
- * 413/415 (avatar), plus the transport failures.
- *
- * Delegates to the shared reader (`src/utils/apiError.js`), which understands the `{ error }`
- * envelope the API really sends - this used to read `data.message` and so quietly lost the
- * API's own text.
+ * 401 (wrong current password), plus the transport failures.
  */
-function describeFailure(failure, fallback) {
-    if (failure?.status === 413) return 'That image is larger than 2 MB.';
-
-    return describeApiFailure(failure, fallback);
-}

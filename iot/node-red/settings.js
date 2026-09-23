@@ -25,11 +25,11 @@ const adminPasswordHash = process.env.NODE_RED_ADMIN_PASSWORD_HASH;
 // --- MQTT broker host --------------------------------------------------------
 // flows.json points the mqtt-broker config node at "${MQTT_HOST}", which
 // Node-RED substitutes when it loads the flows - so the variable must be set
-// before the runtime starts, not after. Compose supplies the `mosquitto`
-// service name; Railway supplies the broker's private domain
-// (mosquitto.railway.internal), because service names do not resolve there.
-// This default keeps a bare `node-red` run working with no environment at all.
-process.env.MQTT_HOST = process.env.MQTT_HOST || 'mosquitto';
+// before the runtime starts, not after. The broker is now the external EMQX
+// Serverless cluster (port 8883, TLS, username/password), so this default is the
+// real host rather than a compose service name.
+process.env.MQTT_HOST =
+    process.env.MQTT_HOST || 'n1119107.ala.asia-southeast1.emqxsl.com';
 
 module.exports = {
     // Editor + runtime port inside the container.
@@ -38,8 +38,12 @@ module.exports = {
     // The pipeline itself lives here.
     flowFile: 'flows.json',
 
-    // Encrypts credentials stored in flows_cred.json. Override in .env.
-    credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || 'water-ui-dev-credential-secret',
+    // Credential encryption is OFF by default so the committed flows_cred.json -
+    // which holds the ${MQTT_USERNAME} / ${MQTT_PASSWORD} placeholders, never the
+    // real values - is read as plaintext and substituted at runtime. Setting
+    // NODE_RED_CREDENTIAL_SECRET turns encryption back on, but then credentials
+    // must be (re)entered in the editor because the file is encrypted.
+    credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || false,
 
     // Editor login. Spread in only when a hash is configured, so development
     // keeps its open editor while production cannot start without a login.

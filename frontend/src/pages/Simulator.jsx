@@ -38,8 +38,12 @@ import { describeApiFailure, apiErrorMessage } from '../utils/apiError.js';
  * that no board owns.
  */
 const DEFAULTS = {
-    brokerUrl: 'mqtt://localhost',
-    port: 1883,
+    // The broker is external (EMQX Serverless) and TLS-only, so the scheme must be
+    // mqtts:// for the TLS + credential path in the backend to engage. Overridable at
+    // build time (VITE_MQTT_BROKER_URL / VITE_MQTT_PORT) for a different broker.
+    brokerUrl:
+        import.meta.env.VITE_MQTT_BROKER_URL ?? 'mqtts://n1119107.ala.asia-southeast1.emqxsl.com',
+    port: Number(import.meta.env.VITE_MQTT_PORT ?? 8883),
     boardID: 'AA240238',
     sleepTime: 5000,
     condition: 'Safe',

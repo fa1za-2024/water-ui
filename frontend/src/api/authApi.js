@@ -54,18 +54,6 @@ export const authApi = apiSlice.injectEndpoints({
             invalidatesTags: ['User'],
         }),
 
-        uploadAvatar: builder.mutation({
-            query: (file) => {
-                // FormData must be passed through untouched: fetchBaseQuery leaves the
-                // Content-Type alone so the browser can add the multipart boundary.
-                const body = new FormData();
-                body.append('avatar', file);
-
-                return { url: '/users/upload-avatar', method: 'POST', body };
-            },
-            invalidatesTags: ['User'],
-        }),
-
         changePassword: builder.mutation({
             /**
              * PUT /api/users/password (A21/T-204).
@@ -93,6 +81,5 @@ export const {
     useLazyGetMeQuery,
     useGetProfileQuery,
     useUpdateProfileMutation,
-    useUploadAvatarMutation,
     useChangePasswordMutation,
 } = authApi;

@@ -24,24 +24,15 @@ export function errorHandler(
 ): void {
     const error = err as Error & { status?: number; statusCode?: number; code?: string };
 
-    // multer reports oversized uploads as a code, not a status.
-    const status =
-        error.code === 'LIMIT_FILE_SIZE'
-            ? 413
-            : Number(error.status ?? error.statusCode ?? 500);
+    const status = Number(error.status ?? error.statusCode ?? 500);
 
     console.error(`[error] ${req.method} ${req.originalUrl} ->`, error.message);
 
     res.status(status).json({
-        error:
-            status >= 500
-                ? 'Internal Server Error'
-                : error.code === 'LIMIT_FILE_SIZE'
-                  ? 'Uploaded file is too large'
-                  : error.message,
+        error: status >= 500 ? 'Internal Server Error' : error.message,
         // Diagnostics are ONLY for 5xx, and only outside production. A 4xx is an
-        // expected outcome (bad input, missing token, oversized upload); adding
-        // its stack trace would just leak internal paths to the client.
+        // expected outcome (bad input, missing token); adding its stack trace would
+        // just leak internal paths to the client.
         ...(process.env.NODE_ENV !== 'production' && status >= 500
             ? { detail: error.message, stack: error.stack }
             : {}),

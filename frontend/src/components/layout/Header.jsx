@@ -23,8 +23,8 @@ import ProfileModal from '../profile/ProfileModal.jsx';
  *    profile and sign-out.
  *
  * The title truncates rather than squeezing the avatar off-screen, and the subheading
- * is hidden on small screens. The avatar falls back to the user's initials when no
- * picture has been uploaded.
+ * is hidden on small screens. The avatar shows the user's initials; the picture upload
+ * was removed together with MinIO (T-1.1).
  */
 export default function Header({ onOpenNav }) {
     const { user, signOut } = useAuth();
@@ -89,17 +89,9 @@ export default function Header({ onOpenNav }) {
                     aria-expanded={menuOpen}
                     className="flex items-center gap-2 rounded-full p-1 hover:bg-gray-100"
                 >
-                    {user?.profilePictureUrl ? (
-                        <img
-                            src={user.profilePictureUrl}
-                            alt=""
-                            className="h-10 w-10 rounded-full object-cover"
-                        />
-                    ) : (
-                        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700">
-                            {initials || <User className="h-5 w-5" aria-hidden="true" />}
-                        </span>
-                    )}
+                    <span className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700">
+                        {initials || <User className="h-5 w-5" aria-hidden="true" />}
+                    </span>
                     <span className="hidden text-sm text-gray-600 sm:inline">
                         {user?.firstName ?? 'Profile'}
                     </span>

@@ -5,7 +5,9 @@
  *   GET  /api/users/profile        -> 200 { user }
  *   PUT  /api/users/profile        -> 200 { user }
  *   PUT  /api/users/password       -> 200 { message }  (current + new password, A21/T-204)
- *   POST /api/users/upload-avatar  -> 200 { profilePictureUrl }
+ *
+ * `POST /api/users/upload-avatar` was removed with MinIO (T-1.4): there is no
+ * avatar storage any more.
  *
  * These live in their own router because they are documented under `/api/users`
  * while register/login sit under `/api/auth` - see Appendix A (A20).
@@ -19,12 +21,6 @@ import { z } from 'zod';
 
 import { BCRYPT_ROUNDS, passwordField } from './authController';
 import { prisma } from '../config/db';
-import {
-    ensureBucket,
-    objectNameFromUrl,
-    removeObject,
-    uploadPublicObject,
-} from '../config/minio';
 import { publicUserSelect, toPublicUser } from '../types/user';
 import { HttpError } from '../utils/httpError';
 
@@ -40,15 +36,9 @@ export const updateProfileSchema = z
         message: 'Provide at least one field to update',
     });
 
-export const ALLOWED_AVATAR_TYPES: Record<string, string> = {
-    'image/png': 'png',
-    'image/jpeg': 'jpg',
-    'image/webp': 'webp',
-};
-
 /** The single profile. Throws 404 when the database is still empty. */
 async function requireProfile() {
-    const user = await prisma.user.findFirst({ select: { id: true, profilePictureUrl: true } });
+    const user = await prisma.user.findFirst({ select: { id: true } });
 
     if (!user) {
         throw new HttpError(404, 'No profile exists yet. Register or run `npm run prisma:seed`.');
@@ -136,50 +126,4 @@ export async function changePassword(req: Request, res: Response): Promise<void>
     // No user in the response: nothing about the profile changed, and it keeps the
     // response free of anything credential-shaped.
     res.json({ message: 'Password updated' });
-}
-
-/**
- * POST /api/users/upload-avatar
- *
- * multipart/form-data with a single `avatar` field. The image is streamed to
- * MinIO and only the resulting URL is stored in MySQL - see section 2 of
- * MASTER_CONTEXT.md.
- *
- * The password flow that used to be parked here is now `changePassword` above
- * (authenticated current-password change); an emailed reset remains out of scope
- * because no mail transport exists (A21).
- */
-export async function uploadAvatar(req: Request, res: Response): Promise<void> {
-    const file = req.file;
-
-    if (!file) {
-        throw new HttpError(400, 'No file uploaded. Send multipart/form-data with an "avatar" field.');
-    }
-
-    const extension = ALLOWED_AVATAR_TYPES[file.mimetype];
-    if (!extension) {
-        throw new HttpError(415, 'Only PNG, JPEG or WebP images are allowed');
-    }
-
-    const existing = await requireProfile();
-
-    await ensureBucket();
-
-    // Timestamped key so a browser/CDN never serves a stale cached avatar.
-    const objectName = `avatars/user-${existing.id}-${Date.now()}.${extension}`;
-    const url = await uploadPublicObject(objectName, file.buffer, file.mimetype);
-
-    const user = await prisma.user.update({
-        where: { id: existing.id },
-        data: { profilePictureUrl: url },
-        select: publicUserSelect,
-    });
-
-    // Best-effort cleanup of the replaced avatar; failure is not fatal.
-    if (existing.profilePictureUrl) {
-        const previous = objectNameFromUrl(existing.profilePictureUrl);
-        if (previous) await removeObject(previous);
-    }
-
-    res.json({ profilePictureUrl: url, user: toPublicUser(user) });
 }

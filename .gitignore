@@ -14,17 +14,21 @@ backend/src/generated/
 .env
 .env.local
 .env.*.local
+# Broker address + live credentials - local reference only, never committed.
+# Copy the MQTT username/password from here into Railway/.env or the ESP32 sketch.
+docs/emqx broker.txt
 
 # --- Node-RED runtime artefacts ---------------------------------------------
 # iot/node-red is bind-mounted at /data inside the container, so Node-RED and
-# npm write into the repo. flows.json, settings.js and package.json are source
-# and ARE committed; everything below is generated.
+# npm write into the repo. flows.json, settings.js, package.json and
+# flows_cred.json are source and ARE committed; everything below is generated.
+# flows_cred.json now holds ${MQTT_USERNAME}/${MQTT_PASSWORD} placeholders, not
+# secrets, which is why it is tracked (T-3.3).
 iot/node-red/.config.*
 iot/node-red/.sessions.json
 iot/node-red/.backup/
 iot/node-red/.npm/
 iot/node-red/lib/
-iot/node-red/flows_cred.json
 
 # --- Logs / OS noise --------------------------------------------------------
 *.log

@@ -77,22 +77,8 @@ services:
       - water_ui_network
 
   # ------------------------------------------------------------ IoT pipeline
-  mosquitto:
-    image: eclipse-mosquitto:2
-    container_name: water_ui_mosquitto
-    restart: unless-stopped
-    ports:
-      - "${MQTT_PORT:-1883}:1883"       # MQTT - the XIAO ESP32C3 connects here
-      # WebSockets remapped to 9002: MinIO's console already owns 9001.
-      - "${MQTT_WS_PORT:-9002}:9001"
-    volumes:
-      # Whole config dir (rw) so `mosquitto_passwd` can write the passwd file
-      - ./iot/mosquitto:/mosquitto/config
-      - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
-    networks:
-      - water_ui_network
-
+  # The broker is EXTERNAL (EMQX Serverless, TLS 8883): there is no self-hosted
+  # Mosquitto service any more. See docs/emqx broker.txt and .env.example.
   nodered:
     image: nodered/node-red:latest
     container_name: water_ui_nodered
@@ -111,11 +97,17 @@ services:
       # on the host needs BACKEND_URL=http://host.docker.internal:5000 in .env - see
       # .env.example. Wrong value = readings reach InfluxDB but never reach the dashboard.
       BACKEND_URL: ${BACKEND_URL:-http://backend:5000}
-      MQTT_HOST: mosquitto
-      MQTT_PORT: "1883"
+      # External EMQX broker. The host/port/TLS switch come from the environment;
+      # the username/password are substituted by Node-RED into the committed
+      # flows_cred.json placeholders at load time.
+      MQTT_HOST: ${MQTT_HOST:-n1119107.ala.asia-southeast1.emqxsl.com}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      MQTT_USE_TLS: ${MQTT_USE_TLS:-true}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CA_CERT: ${MQTT_CA_CERT:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
-      NODE_RED_CREDENTIAL_SECRET: ${NODE_RED_CREDENTIAL_SECRET:-water-ui-dev-credential-secret}
     volumes:
       # settings.js, flows.json and package.json all live here.
       - ./iot/node-red:/data
@@ -133,57 +125,6 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
-      mosquitto:
-        condition: service_started
-    networks:
-      - water_ui_network
-
-  # ------ object storage
-  # NOTE: MinIO no longer publishes images on Docker Hub (minio/* returns
-  # "pull access denied"); the official registry is now quay.io.
-  minio:
-    image: quay.io/minio/minio:latest
-    container_name: water_ui_minio
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    ports:
-      # Loopback only (T-411) - MinIO's console and S3 API are for this host.
-      - "${BIND_HOST:-127.0.0.1}:${MINIO_PORT:-9000}:9000"      # S3 API
-      - "${BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"  # web console
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 15s
-    networks:
-      - water_ui_network
-
-  # One-shot job: create the profile-pictures bucket, then exit.
-  minio-init:
-    image: quay.io/minio/mc:latest
-    container_name: water_ui_minio_init
-    restart: "no"
-    depends_on:
-      - minio
-    environment:
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-profile-pictures}
-    entrypoint: >
-      /bin/sh -c '
-      until mc alias set local "$$MINIO_ENDPOINT" "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
-        echo "minio-init: waiting for MinIO..."; sleep 2;
-      done;
-      mc mb --ignore-existing "local/$$MINIO_BUCKET_NAME";
-      mc anonymous set download "local/$$MINIO_BUCKET_NAME";
-      echo "minio-init: bucket $$MINIO_BUCKET_NAME is ready";'
     networks:
       - water_ui_network
 
@@ -207,13 +148,14 @@ services:
       INFLUXDB_TOKEN: ${INFLUXDB_TOKEN:-waterui-dev-token-change-me}
       INFLUXDB_ORG: ${INFLUXDB_ORG:-water_ui_org}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET:-water_quality_bucket}
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: 9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-profile-pictures}
-      MQTT_HOST: mosquitto
-      MQTT_PORT: 1883
+      # External EMQX broker (TLS). Username/password are required by it;
+      # MQTT_CA_CERT is optional (the chain roots at a CA Node already trusts).
+      MQTT_HOST: ${MQTT_HOST:-n1119107.ala.asia-southeast1.emqxsl.com}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      MQTT_USE_TLS: ${MQTT_USE_TLS:-true}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CA_CERT: ${MQTT_CA_CERT:-}
       # nginx sits in front of the API in the `app` profile and sets
       # X-Forwarded-For, so Express must trust exactly that one hop or
       # express-rate-limit cannot tell clients apart (and logs a ValidationError
@@ -254,9 +196,6 @@ volumes:
   mysql_data:
   influxdb_data:
   influxdb_config:
-  mosquitto_data:
-  mosquitto_log:
-  minio_data:
 
 networks:
   water_ui_network:
