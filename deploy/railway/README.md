@@ -114,9 +114,43 @@ are the current ones:
 
 ### 3.3 Add the five repo services
 
-**New → GitHub Repo → this repository**, once per service. For each, open
-**Settings → Source** and set the **Root Directory** to the value in the table
-in §2. Railway then finds that directory's `railway.json` and `Dockerfile`.
+**New → GitHub Repo → this repository**, once per service, then immediately set
+**Settings → Source → Root Directory** to that service's folder. Do this *before*
+the first build.
+
+| Service | Root Directory |
+| :--- | :--- |
+| `backend` | `backend` |
+| `frontend` | `frontend` |
+| `node-red` | `iot/node-red` |
+| `mosquitto` | `deploy/railway/mosquitto` |
+| `minio` | `deploy/railway/minio` |
+
+**Skip this and the build fails immediately.** Railpack — Railway's default
+builder — analyzes the configured root, and at the repository root there is no
+single app, so language detection gives up:
+
+```
+╭─────────────────╮
+│ Railpack 0.39.0 │
+╰─────────────────╯
+  ⚠ Script start.sh not found
+  ✖ Railpack could not determine how to build the app.
+  The app contents that Railpack analyzed contains:
+  ./
+  ├── backend/
+  ├── deploy/
+  ...
+```
+
+The reason Railpack ran at all is subtle: each service's `railway.json` — the
+file that declares `"builder": "DOCKERFILE"` — is **only read from the configured
+root directory**. While the root is the repository root, that file is invisible,
+Railway sees no `Dockerfile`, and falls back to Railpack.
+
+This is a per-service dashboard setting, and the CLI cannot set it: neither
+`railway add --repo` nor `railway service source connect` has a root-directory
+flag.
 
 ### 3.4 Volumes
 
@@ -402,6 +436,34 @@ reproducible telemetry unless you add one.
 ---
 
 ## 10. Troubleshooting
+
+**`railpack prepare exited with an error` / `Script start.sh not found`.** The
+service's **Root Directory** is still the repository root, so Railway used
+Railpack (its default builder) and Railpack found no single app to build. Set
+**Settings → Source → Root Directory** to that service's folder — see the table
+in §3.3 — and redeploy. Railway then uses the `Dockerfile` and `railway.json` in
+that folder. The root directory is dashboard-only (the CLI cannot set it), and
+`railway.json` is only read from it.
+
+**`backend` crash-loops with `refusing to start: MySQL is unreachable`.** The
+boot probe could not open a connection at `DATABASE_URL`. The log now names the
+target and the concrete TCP verdict, so the entry itself tells you which case it
+is:
+
+| The log says | What it means | Fix |
+| :--- | :--- | :--- |
+| `DATABASE_URL is not set` | no value on the service, so it refuses to fall back to the dev default | set `DATABASE_URL=${{MySQL.MYSQL_URL}}` on `backend` |
+| `ENOTFOUND` | the hostname does not resolve | the reference did not resolve — check the database service's **exact** name, and that it is in the same environment |
+| `ECONNREFUSED` | host resolved, nothing listening | MySQL is stopped or not deployed, or the port is wrong |
+| `no TCP response within 3000 ms` | the port is blackholed | wrong host, or the database is not on this project's private network |
+| `accepted a TCP connection but rejected the query` | reachable, but MySQL refused the query | credentials, database name, or `DB_TLS` |
+
+Note that the *old* generic message (`boot probe timed out after 3500 ms`) could
+not distinguish these — the Prisma pool does not report its own error until its
+10 s acquire timeout, which is longer than the probe's 3.5 s bound, so the probe
+always won and said only "timed out". That is why the check in
+[`backend/src/config/db.ts`](../../backend/src/config/db.ts) now probes the socket
+first.
 
 **`minio` fails its healthcheck.** `PORT` is not `9000`, or the public domain
 targets a different port. MinIO ignores Railway's assigned `PORT`, so the service

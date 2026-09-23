@@ -168,3 +168,4 @@ These are non-negotiable — they come from `MASTER_CONTEXT.md` section 3:
 5. **Live updates:** Socket.io → Redux → components. Never poll.
 6. **InfluxDB:** cast with `parseFloat()`/`parseInt()` first; strings break Chart.js.
 7. **Dates:** format Chart.js timestamps with Day.js.
+"# water-ui" 
