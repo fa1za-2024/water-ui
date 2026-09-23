@@ -31,6 +31,14 @@ const adminPasswordHash = process.env.NODE_RED_ADMIN_PASSWORD_HASH;
 process.env.MQTT_HOST =
     process.env.MQTT_HOST || 'n1119107.ala.asia-southeast1.emqxsl.com';
 
+// --- MQTT client id ----------------------------------------------------------
+// flows.json substitutes ${MQTT_CLIENT_ID}. It MUST be unique per running
+// instance: a broker disconnects an existing session the moment a second client
+// connects with the same id, so two Node-REDs (e.g. local Docker + Railway)
+// sharing one id flap connected/disconnected forever. Each environment sets its
+// own value; this default keeps a bare `node-red` run working.
+process.env.MQTT_CLIENT_ID = process.env.MQTT_CLIENT_ID || 'water-ui-nodered';
+
 module.exports = {
     // Editor + runtime port inside the container.
     uiPort: process.env.PORT || 1880,

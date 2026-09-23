@@ -12,7 +12,7 @@
         "name": "EMQX Serverless (broker = MQTT_HOST)",
         "broker": "${MQTT_HOST}",
         "port": "8883",
-        "clientid": "water-ui-nodered",
+        "clientid": "${MQTT_CLIENT_ID}",
         "autoConnect": true,
         "usetls": true,
         "protocolVersion": "4",

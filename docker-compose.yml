@@ -106,6 +106,8 @@ services:
       MQTT_USERNAME: ${MQTT_USERNAME:-}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       MQTT_CA_CERT: ${MQTT_CA_CERT:-}
+      # Must differ from the Railway instance or the two fight over the session.
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-water-ui-nodered-local}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     volumes:
