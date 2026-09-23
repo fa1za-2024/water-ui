@@ -17,6 +17,9 @@
 #                       private domain on Railway
 #                       (`http://${{backend.RAILWAY_PRIVATE_DOMAIN}}:8080`),
 #                       because `backend` is not a resolvable name there.
+#   DNS_RESOLVER      - nameserver nginx uses to re-resolve BACKEND_UPSTREAM.
+#                       Set by 05-resolver.envsh from the container's own
+#                       /etc/resolv.conf; the Dockerfile carries a fallback.
 #
 # Defaults live in the Dockerfile (ENV PORT=80, BACKEND_UPSTREAM=http://backend:5000)
 # so `docker compose --profile app up` behaves exactly as before.
@@ -25,6 +28,13 @@
 server {
     listen ${PORT};
     server_name _;
+
+    # proxy_pass is given a VARIABLE below, which makes nginx re-resolve the
+    # backend per request instead of caching the address it saw at startup. That
+    # matters because the backend is assigned a new private address on every
+    # Railway deploy; without it the frontend answers 504 until it is restarted
+    # too. DNS_RESOLVER comes from 05-resolver.envsh.
+    resolver ${DNS_RESOLVER} valid=10s;
 
     root /usr/share/nginx/html;
     index index.html;
@@ -43,7 +53,8 @@ server {
 
     # --- REST API -> Express ------------------------------------------------
     location /api/ {
-        proxy_pass ${BACKEND_UPSTREAM};
+        set $backend_upstream ${BACKEND_UPSTREAM};
+        proxy_pass $backend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -53,7 +64,8 @@ server {
 
     # --- Socket.io -> Express (needs the Upgrade headers) -------------------
     location /socket.io/ {
-        proxy_pass ${BACKEND_UPSTREAM};
+        set $backend_upstream ${BACKEND_UPSTREAM};
+        proxy_pass $backend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade    $http_upgrade;
         proxy_set_header Connection "upgrade";

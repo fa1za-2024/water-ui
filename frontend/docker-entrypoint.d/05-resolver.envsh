@@ -1,0 +1,41 @@
+#!/bin/sh
+# =============================================================================
+# Derive the DNS resolver nginx must use to RE-RESOLVE the backend upstream.
+#
+# `proxy_pass <hostname>` without variables is resolved once, when nginx loads
+# its configuration, and the address is then cached for the life of the worker.
+# On Railway the backend receives a new private address on every deploy, so the
+# frontend kept proxying to a dead address and answered 504 until it was
+# restarted too (observed 2026-09-24: /api/boards returned 504 while the backend
+# was healthy and logging "API + Socket.io listening on :8080").
+#
+# Putting a variable in proxy_pass makes nginx resolve per-request, which
+# requires an explicit `resolver` directive. Reading the container's own
+# nameserver keeps one image working under Docker's embedded DNS (127.0.0.11)
+# and on Railway's private network, without hard-coding either.
+#
+# The stock nginx entrypoint SOURCES every /docker-entrypoint.d/*.envsh before
+# it runs 20-envsubst-on-templates.sh, so this export reaches the template.
+# =============================================================================
+set -e
+
+DNS_RESOLVER="$(awk '$1 == "nameserver" { print $2; exit }' /etc/resolv.conf)"
+
+if [ -z "$DNS_RESOLVER" ]; then
+    echo "05-resolver: no nameserver in /etc/resolv.conf - leaving DNS_RESOLVER as-is" >&2
+    exit 0
+fi
+
+# An IPv6 nameserver must be bracketed in an nginx `resolver` directive, because
+# the address itself contains colons.
+case "$DNS_RESOLVER" in
+    *:*)
+        case "$DNS_RESOLVER" in
+            \[*\]) ;;
+            *) DNS_RESOLVER="[$DNS_RESOLVER]" ;;
+        esac
+        ;;
+esac
+
+export DNS_RESOLVER
+echo "05-resolver: nginx resolver set to $DNS_RESOLVER"
