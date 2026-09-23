@@ -17,13 +17,16 @@ backend/src/generated/
 # Broker address + live credentials - local reference only, never committed.
 # Copy the MQTT username/password from here into Railway/.env or the ESP32 sketch.
 docs/emqx broker.txt
+# BotFather token for the Water UI alert bot - same rule, local reference only.
+# The real value lives in .env (TELEGRAM_BOT_TOKEN); flows_cred.json keeps a placeholder.
+docs/bot.txt
 
 # --- Node-RED runtime artefacts ---------------------------------------------
 # iot/node-red is bind-mounted at /data inside the container, so Node-RED and
 # npm write into the repo. flows.json, settings.js, package.json and
 # flows_cred.json are source and ARE committed; everything below is generated.
-# flows_cred.json now holds ${MQTT_USERNAME}/${MQTT_PASSWORD} placeholders, not
-# secrets, which is why it is tracked (T-3.3).
+# flows_cred.json now holds ${MQTT_USERNAME}/${MQTT_PASSWORD} and
+# ${TELEGRAM_BOT_TOKEN} placeholders, not secrets, which is why it is tracked (T-3.3).
 iot/node-red/.config.*
 iot/node-red/.sessions.json
 iot/node-red/.backup/

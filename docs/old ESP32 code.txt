@@ -24,8 +24,11 @@ float slope = -4.81, intercept = 19.34;
 #define TIME_TO_SLEEP 300
 
 // TELEGRAM
-#define BOTtoken "7955775155:AAF8Ce251LLnU357aTHGF1qblyCyQyl-F5"
-#define CHAT_ID "78786346755"
+// Credentials scrubbed: the previous values were committed to a public repo and
+// must be treated as compromised (revoke the bot token in BotFather). Fill in
+// your own from docs/bot.txt, which is git-ignored.
+#define BOTtoken ""
+#define CHAT_ID ""
 WiFiClientSecure telegramClient;
 UniversalTelegramBot bot(BOTtoken, telegramClient);
 

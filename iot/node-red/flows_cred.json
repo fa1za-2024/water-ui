@@ -2,5 +2,8 @@
     "mqtt_broker": {
         "user": "${MQTT_USERNAME}",
         "password": "${MQTT_PASSWORD}"
+    },
+    "telegram_bot": {
+        "token": "${TELEGRAM_BOT_TOKEN}"
     }
 }
